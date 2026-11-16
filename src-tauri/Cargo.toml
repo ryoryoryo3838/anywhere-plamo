@@ -6,6 +6,12 @@ edition = "2021"
 rust-version = "1.90"
 license = "MIT"
 
+# The workspace root stays here so target/ and Cargo.lock keep their paths.
+[workspace]
+members = ["../crates/anyplm-core", "../crates/anyplm-cli"]
+# The Android-only OCR plugin cannot build on desktop.
+exclude = ["ocr-mobile"]
+
 [lib]
 name = "anywhere_plamo_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]

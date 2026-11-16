@@ -56,6 +56,21 @@ pub fn prompt_with_glossary(
     ))
 }
 
+/// Japanese text goes to English and ASCII-only English to Japanese, as the
+/// app's selection translation does; other scripts need an explicit target.
+pub fn auto_target(text: &str) -> Option<&'static str> {
+    let japanese = |c: char| matches!(c, '\u{3040}'..='\u{30ff}' | '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}');
+    if text.chars().any(japanese) {
+        Some("en")
+    } else if text.chars().any(|c| c.is_ascii_alphabetic())
+        && !text.chars().any(|c| c.is_alphabetic() && !c.is_ascii())
+    {
+        Some("ja")
+    } else {
+        None
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub enum Paragraph<'a> {
     Text(&'a str),
@@ -160,6 +175,16 @@ mod tests {
         assert!(value.contains("input<|plamo:msg|>  Hello\nworld!  "));
         assert!(value.ends_with("output<|plamo:key|>lang<|plamo:val|>ja<|plamo:msg|>"));
         assert!(!value.contains("<|plamo:bos|>"));
+    }
+
+    #[test]
+    fn auto_target_matches_the_selection_direction_rule() {
+        assert_eq!(auto_target("今日は晴れです"), Some("en"));
+        assert_eq!(auto_target("カタカナ"), Some("en"));
+        assert_eq!(auto_target("The cat sat."), Some("ja"));
+        assert_eq!(auto_target("Café au lait"), None);
+        assert_eq!(auto_target("안녕하세요"), None);
+        assert_eq!(auto_target("1234"), None);
     }
 
     #[test]
