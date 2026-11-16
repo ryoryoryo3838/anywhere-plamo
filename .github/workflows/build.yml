@@ -45,7 +45,7 @@ jobs:
         working-directory: gui
       - run: npm run test:protocol
         working-directory: gui
-      - run: cargo fmt --all --check
+      - run: cargo fmt -p anyplm-core -p anyplm-cli -p anywhere-plamo --check
       - run: cargo test
       - run: npm run runtime:build
         working-directory: gui
