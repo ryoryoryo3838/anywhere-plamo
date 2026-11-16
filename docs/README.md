@@ -49,6 +49,8 @@ npm run runtime:build -- --backend cuda
 
 GPU版はCPU版と並べて`llama-server-cuda`として置かれます。対象のGPUの世代はビルドするPCの`nvidia-smi`から判定し、見つからなければllama.cppの既定の複数世代向けにビルドします（`CUDAARCHS=89`のように指定もできます）。アプリは既定でCPU版を使い、起動時にGPU版が動くと分かった場合だけ、設定の「翻訳モデル」に「GPUで起動する」を表示します。オンにするとGPU版を使い、起動できなければCPU版に戻ります。GPU版の実行にはCUDAのランタイム（`libcudart`・`libcublas`）が必要です。
 
+AppImageのように中身を変えられない配布版でも、ビルドしたGPU版をデータフォルダの`runtime/llama-server-cuda`（Linuxでは`~/.local/share/app.anywhere-plamo.desktop/runtime/`、Windowsでは`%APPDATA%\app.anywhere-plamo.desktop\runtime\llama-server-cuda.exe`と必要なDLL）に実行できる状態で置くと使えます。同梱のGPU版よりこちらを優先します。
+
 配布用ファイルを作る場合:
 
 ```sh

@@ -25,13 +25,20 @@ pub const GPU_EXECUTABLE: &str = if cfg!(windows) {
     "llama-server-cuda"
 };
 
-/// Whether the CUDA server next to `cpu` exists and can see a GPU.
-pub async fn gpu_available(cpu: &Path) -> bool {
-    let gpu = cpu.with_file_name(GPU_EXECUTABLE);
-    if !gpu.is_file() {
-        return false;
-    }
-    let mut command = tokio::process::Command::new(&gpu);
+/// The CUDA server: one the user placed in the data folder's `runtime/` (e.g. for an
+/// AppImage, which cannot gain files), else the one shipped beside the CPU server `cpu`.
+pub fn gpu_server(cpu: &Path, data: &Path) -> Option<std::path::PathBuf> {
+    [
+        data.join("runtime").join(GPU_EXECUTABLE),
+        cpu.with_file_name(GPU_EXECUTABLE),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())
+}
+
+/// Whether the CUDA server `gpu` starts and can see a GPU.
+pub async fn gpu_available(gpu: &Path) -> bool {
+    let mut command = tokio::process::Command::new(gpu);
     #[cfg(windows)]
     command.creation_flags(0x08000000); // CREATE_NO_WINDOW
     command
@@ -70,19 +77,18 @@ pub fn set_gpu_enabled(data: &Path, enabled: bool) -> Result<(), String> {
     result.map_err(|_| "GPUの設定を保存できませんでした。".into())
 }
 
-/// Starts the CUDA server next to `cpu` when `gpu` is chosen and it exists, else `cpu`.
+/// Starts the CUDA server `gpu` when one is given, else the CPU server `cpu`.
 /// A GPU server that fails to start falls back to the CPU server.
 pub async fn start_best(
     cpu: &Path,
     model: &Path,
-    gpu: bool,
+    gpu: Option<&Path>,
     cancel: &CancellationToken,
 ) -> Result<Engine, String> {
-    let binary = cpu.with_file_name(GPU_EXECUTABLE);
-    if !gpu || !binary.is_file() {
+    let Some(gpu) = gpu else {
         return Engine::start(cpu, model, cancel).await;
-    }
-    match Engine::start(&binary, model, cancel).await {
+    };
+    match Engine::start(gpu, model, cancel).await {
         Err(error) if error != "CANCELLED" => Engine::start(cpu, model, cancel).await,
         result => result,
     }
@@ -475,6 +481,24 @@ fn connection_error(error: reqwest::Error) -> String {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn gpu_server_prefers_one_placed_in_the_data_folder() {
+        let root = std::env::temp_dir().join(format!("plamo-server-{}", uuid::Uuid::new_v4()));
+        let (app, data) = (root.join("app"), root.join("data"));
+        std::fs::create_dir_all(&app).unwrap();
+        let cpu = app.join(EXECUTABLE);
+        assert_eq!(gpu_server(&cpu, &data), None);
+        std::fs::write(app.join(GPU_EXECUTABLE), "").unwrap();
+        assert_eq!(gpu_server(&cpu, &data), Some(app.join(GPU_EXECUTABLE)));
+        std::fs::create_dir_all(data.join("runtime")).unwrap();
+        std::fs::write(data.join("runtime").join(GPU_EXECUTABLE), "").unwrap();
+        assert_eq!(
+            gpu_server(&cpu, &data),
+            Some(data.join("runtime").join(GPU_EXECUTABLE))
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn gpu_choice_defaults_to_cpu_and_round_trips() {

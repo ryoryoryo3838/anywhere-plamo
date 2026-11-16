@@ -146,6 +146,11 @@ impl Drop for Operation<'_> {
 }
 
 impl AppState {
+    /// The CUDA server, looking in the data folder before the bundled resources.
+    fn gpu_server(&self) -> Option<PathBuf> {
+        engine::gpu_server(&self.binary, self.directory.parent()?)
+    }
+
     fn operation(&self, label: &str) -> &Mutex<Option<CancellationToken>> {
         match label {
             "popup" => &self.popup_operation,
@@ -234,7 +239,11 @@ impl AppState {
             engine::start_best(
                 &self.binary,
                 &model::path(&self.directory),
-                self.use_gpu.load(Ordering::Relaxed),
+                self.use_gpu
+                    .load(Ordering::Relaxed)
+                    .then(|| self.gpu_server())
+                    .flatten()
+                    .as_deref(),
                 cancel,
             )
             .await?,
@@ -1140,7 +1149,10 @@ pub fn run() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let state = handle.state::<AppState>();
-                let found = engine::gpu_available(&state.binary).await;
+                let found = match state.gpu_server() {
+                    Some(gpu) => engine::gpu_available(&gpu).await,
+                    None => false,
+                };
                 let _ = state.gpu_available.set(found);
             });
             if !wayland {
