@@ -48,9 +48,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "anyplm-core"
+version = "0.2.8"
+dependencies = [
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "anywhere-plamo"
 version = "0.2.8"
 dependencies = [
+ "anyplm-core",
  "arboard",
  "base64 0.22.1",
  "cc",

@@ -1,15 +1,14 @@
 mod camera;
-mod dictionary;
 mod engine;
 mod lens;
 mod lens_select;
 mod model;
 mod ocr_model;
-mod protocol;
 mod selection;
 mod shortcut;
 mod update;
 
+use anyplm_core::{dictionary, protocol};
 use serde::Serialize;
 use std::{
     path::PathBuf,

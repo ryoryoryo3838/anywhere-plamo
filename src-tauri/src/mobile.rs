@@ -1,13 +1,11 @@
 mod camera;
-mod dictionary;
 #[path = "mobile_engine.rs"]
 mod engine;
 mod model;
 mod ocr_model;
 mod screen_lens;
-#[allow(dead_code)]
-mod protocol;
 
+use anyplm_core::{dictionary, protocol};
 use serde::Serialize;
 use std::{
     path::PathBuf,
