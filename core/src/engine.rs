@@ -25,15 +25,11 @@ pub const GPU_EXECUTABLE: &str = if cfg!(windows) {
     "llama-server-cuda"
 };
 
-/// Picks the CUDA server next to `cpu` when it can see a GPU, else `cpu`.
-/// `marker` records a confirmed GPU so later launches skip the probe; without it the GPU is probed again.
-pub async fn select_binary(cpu: &Path, marker: &Path) -> std::path::PathBuf {
+/// Whether the CUDA server next to `cpu` exists and can see a GPU.
+pub async fn gpu_available(cpu: &Path) -> bool {
     let gpu = cpu.with_file_name(GPU_EXECUTABLE);
     if !gpu.is_file() {
-        return cpu.to_owned();
-    }
-    if marker.is_file() {
-        return gpu;
+        return false;
     }
     let mut command = tokio::process::Command::new(&gpu);
     #[cfg(windows)]
@@ -44,34 +40,50 @@ pub async fn select_binary(cpu: &Path, marker: &Path) -> std::path::PathBuf {
         .stderr(Stdio::null())
         .kill_on_drop(true);
     // A missing CUDA runtime fails to start; a missing GPU lists "(none)".
-    let found = tokio::time::timeout(Duration::from_secs(15), command.output())
+    tokio::time::timeout(Duration::from_secs(15), command.output())
         .await
         .is_ok_and(|output| {
             output.is_ok_and(|output| {
                 output.status.success() && lists_gpu(&String::from_utf8_lossy(&output.stdout))
             })
-        });
-    if !found {
-        return cpu.to_owned();
-    }
-    let _ = std::fs::write(marker, "");
-    gpu
+        })
 }
 
-/// Starts the CUDA server when the device has a GPU, else the CPU server at `cpu`.
-/// A GPU that stops working falls back to the CPU server and is probed again next launch.
+/// The user's choice to start on the GPU, kept as an empty file in the app's data
+/// folder so the app and plm share it. The CPU server is the default.
+const GPU_CHOICE: &str = "use-gpu";
+
+pub fn gpu_enabled(data: &Path) -> bool {
+    data.join(GPU_CHOICE).is_file()
+}
+
+pub fn set_gpu_enabled(data: &Path, enabled: bool) -> Result<(), String> {
+    let path = data.join(GPU_CHOICE);
+    let result = if enabled {
+        std::fs::create_dir_all(data).and_then(|_| std::fs::write(&path, ""))
+    } else {
+        std::fs::remove_file(&path).or_else(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => Ok(()),
+            _ => Err(error),
+        })
+    };
+    result.map_err(|_| "GPUの設定を保存できませんでした。".into())
+}
+
+/// Starts the CUDA server next to `cpu` when `gpu` is chosen and it exists, else `cpu`.
+/// A GPU server that fails to start falls back to the CPU server.
 pub async fn start_best(
     cpu: &Path,
     model: &Path,
-    marker: &Path,
+    gpu: bool,
     cancel: &CancellationToken,
 ) -> Result<Engine, String> {
-    let binary = select_binary(cpu, marker).await;
+    let binary = cpu.with_file_name(GPU_EXECUTABLE);
+    if !gpu || !binary.is_file() {
+        return Engine::start(cpu, model, cancel).await;
+    }
     match Engine::start(&binary, model, cancel).await {
-        Err(error) if binary != cpu && error != "CANCELLED" => {
-            let _ = std::fs::remove_file(marker);
-            Engine::start(cpu, model, cancel).await
-        }
+        Err(error) if error != "CANCELLED" => Engine::start(cpu, model, cancel).await,
         result => result,
     }
 }
@@ -463,6 +475,18 @@ fn connection_error(error: reqwest::Error) -> String {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn gpu_choice_defaults_to_cpu_and_round_trips() {
+        let data = std::env::temp_dir().join(format!("plamo-gpu-{}", uuid::Uuid::new_v4()));
+        assert!(!gpu_enabled(&data));
+        set_gpu_enabled(&data, true).unwrap();
+        assert!(gpu_enabled(&data));
+        set_gpu_enabled(&data, false).unwrap();
+        set_gpu_enabled(&data, false).unwrap();
+        assert!(!gpu_enabled(&data));
+        std::fs::remove_dir_all(&data).unwrap();
+    }
 
     #[test]
     fn gpu_probe_reads_llama_server_device_list() {
