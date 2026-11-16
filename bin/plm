@@ -1,0 +1,3 @@
+#!/bin/sh
+# plm for source checkouts: rebuilds the CLI when its sources changed, then runs it.
+exec cargo run --quiet --manifest-path "$(dirname "$0")/../src-tauri/Cargo.toml" -p anyplm-cli -- "$@"
