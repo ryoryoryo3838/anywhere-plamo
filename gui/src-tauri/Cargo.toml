@@ -15,7 +15,7 @@ tauri-build = { version = "2", features = [] }
 cc = "1"
 
 [dependencies]
-anyplm-core = { path = "../core" }
+anyplm-core = { path = "../../core" }
 tauri = { version = "2", features = ["image-png"] }
 tauri-plugin-clipboard-manager = "2"
 serde = { version = "1", features = ["derive"] }

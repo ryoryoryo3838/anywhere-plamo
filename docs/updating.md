@@ -15,17 +15,18 @@ v0.2.1 以前には更新機能がないため、この機能を含む版を最�
 
 ## ローカルでビルドする
 
-リリースするときに、`package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`core/Cargo.toml`、`cli/Cargo.toml`、`Cargo.lock`、`src-tauri/tauri.conf.json` と設定画面のバージョンをそろえて上げます。同じバージョンの配布物に差し替えても、アプリは更新対象にしません。
+リリースするときに、`gui/package.json`、`gui/package-lock.json`、`gui/src-tauri/Cargo.toml`、`core/Cargo.toml`、`cli/Cargo.toml`、`Cargo.lock`、`gui/src-tauri/tauri.conf.json` と設定画面のバージョンをそろえて上げます。同じバージョンの配布物に差し替えても、アプリは更新対象にしません。
 
-Mac の例:
+Mac の例（`gui/`で実行します）:
 
 ```sh
+cd gui
 npm ci
 npm run runtime:build
 export TAURI_SIGNING_PRIVATE_KEY="/安全な場所/signing.key"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
 export APPLE_SIGNING_IDENTITY="Anywhere Plamo Local"
-python3 scripts/build-update.py
+python3 ../scripts/build-update.py
 ```
 
 Mac は `.app.tar.gz` と `.dmg`、Linux は AppImage、Windows は NSIS インストーラーを作ります。各 OS・アーキテクチャの実機でビルドしてください。Windows は Python の呼び出しを `py -3.12` に置き換え、環境変数を PowerShell などで設定します。スクリプトはアップロードや Actions の実行を行いません。

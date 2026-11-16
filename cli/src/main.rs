@@ -185,7 +185,7 @@ fn server(flag: Option<&str>) -> Result<PathBuf, Error> {
         // Development builds use the runtime built for the app.
         .chain(cfg!(debug_assertions).then(|| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../src-tauri/resources/runtime")
+                .join("../gui/src-tauri/resources/runtime")
                 .join(engine::EXECUTABLE)
         }))
         .find(|path| path.is_file())

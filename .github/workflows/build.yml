@@ -36,16 +36,22 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential cmake pkg-config libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev libfuse2t64
       - name: Install frontend dependencies
+        working-directory: gui
         run: |
           if test -f package-lock.json; then npm ci; else npm install; fi
       - run: npm run build
+        working-directory: gui
       - run: npm run test:ui
+        working-directory: gui
       - run: npm run test:protocol
+        working-directory: gui
       - run: cargo fmt --all --check
       - run: cargo test
       - run: npm run runtime:build
+        working-directory: gui
       - run: python3 scripts/collect-licenses.py
       - name: Package desktop app
+        working-directory: gui
         run: npm run tauri build -- --bundles ${{ matrix.bundles }}
       - name: Verify macOS bundle
         if: runner.os == 'macOS'
