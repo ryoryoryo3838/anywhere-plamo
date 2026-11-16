@@ -48,7 +48,7 @@ python3 scripts/collect-licenses.py
 npm run tauri build
 ```
 
-成果物は`src-tauri/target/release/bundle/`に生成されます。アプリ内更新用の配布物とMacの継続した署名については[更新の配布手順](updating.md)を参照してください。
+成果物は`target/release/bundle/`に生成されます。アプリ内更新用の配布物とMacの継続した署名については[更新の配布手順](updating.md)を参照してください。
 
 Windowsでは`py -3.12 scripts/collect-licenses.py`の後、`npm run tauri -- build --bundles nsis`でインストーラーを作ります。画面取得・選択翻訳・表示倍率を実機で確認してから配布してください。
 

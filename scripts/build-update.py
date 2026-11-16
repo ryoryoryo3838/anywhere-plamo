@@ -93,10 +93,10 @@ def main():
         build_env['LD_LIBRARY_PATH'] = os.pathsep.join(filter(None, [build_env.get('LD_LIBRARY_PATH'), *libraries]))
     subprocess.run([shutil.which('npm') or 'npm', 'run', 'tauri', '--', 'build', '--bundles', bundles,
                     '--config', json.dumps({'bundle': {'createUpdaterArtifacts': True}})], cwd=ROOT, env=build_env, check=True)
-    artifacts = [file for file in (ROOT / 'src-tauri/target/release/bundle').glob(pattern)
+    artifacts = [file for file in (ROOT / 'target/release/bundle').glob(pattern)
                  if pathlib.Path(str(file) + '.sig').is_file() and pathlib.Path(str(file) + '.sig').stat().st_mtime >= started]
     if len(artifacts) != 1:
-        raise SystemExit('Expected one newly signed updater file in src-tauri/target/release/bundle.')
+        raise SystemExit('Expected one newly signed updater file in target/release/bundle.')
     artifact = artifacts[0]
     signature = pathlib.Path(str(artifact) + '.sig').read_text().strip()
     target = {'Darwin': 'darwin', 'Linux': 'linux', 'Windows': 'windows'}[system] + '-' + architecture
