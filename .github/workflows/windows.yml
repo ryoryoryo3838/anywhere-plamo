@@ -1,0 +1,42 @@
+name: Windows installer
+
+# Runs on pushes to this branch only; commits marked [skip ci] do not start it.
+on:
+  push:
+    branches: [miya/gui-win]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install frontend dependencies
+        working-directory: gui
+        run: npm ci
+      - name: Build llama-server and OCR runtime
+        run: python scripts/build-runtime.py
+      - run: python scripts/collect-licenses.py
+      - run: cargo test
+      - name: Build NSIS installer
+        working-directory: gui
+        run: npm run tauri build -- --bundles nsis
+      - run: cargo build --release -p anyplm-cli
+      - uses: actions/upload-artifact@v4
+        with:
+          name: anywhere-plamo-windows
+          path: |
+            target/release/bundle/nsis/*.exe
+            target/release/plm.exe
+          if-no-files-found: error
