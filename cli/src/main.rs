@@ -424,6 +424,11 @@ fn desktop() -> Result<(), Error> {
     // Detach so closing the terminal does not close the app.
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    #[cfg(windows)]
+    std::os::windows::process::CommandExt::creation_flags(
+        &mut command,
+        0x0000_0008 | 0x0000_0200, // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    );
     let mut child = command
         .spawn()
         .map_err(|error| failed(format!("アプリを起動できません: {error}")))?;

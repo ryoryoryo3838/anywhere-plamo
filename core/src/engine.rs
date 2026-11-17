@@ -94,6 +94,30 @@ pub async fn start_best(
     }
 }
 
+/// Windows has no parent-death signal, so put the server in a job whose processes end when
+/// its last handle closes; the OS closes it when the app exits, even when it is killed.
+#[cfg(windows)]
+fn stop_with_app(child: &Child) {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::{Foundation::HANDLE, System::JobObjects::*};
+    // shortcut: the job handle stays open until the app exits (one per engine start); keep it in
+    // Engine and close it on drop if engines start often enough for the handles to matter.
+    unsafe {
+        let Ok(job) = CreateJobObjectW(None, windows::core::PCWSTR::null()) else {
+            return;
+        };
+        let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let _ = SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const core::ffi::c_void,
+            std::mem::size_of_val(&info) as u32,
+        )
+        .and_then(|_| AssignProcessToJobObject(job, HANDLE(child.as_raw_handle())));
+    }
+}
+
 fn lists_gpu(devices: &str) -> bool {
     devices
         .lines()
@@ -201,6 +225,8 @@ impl Engine {
         let child = command
             .spawn()
             .map_err(|error| format!("翻訳エンジンを起動できません: {error}"))?;
+        #[cfg(windows)]
+        stop_with_app(&child);
         let mut engine = Self {
             child,
             url: format!("http://127.0.0.1:{port}"),
