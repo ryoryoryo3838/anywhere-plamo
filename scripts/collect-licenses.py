@@ -11,7 +11,7 @@ parser.add_argument('--output', type=pathlib.Path, default=root / 'gui/src-tauri
 args = parser.parse_args()
 metadata = json.loads(subprocess.check_output([
     "cargo", "metadata", "--format-version=1", "--manifest-path", str(root / "gui/src-tauri/Cargo.toml"),
-], text=True))
+], encoding="utf-8"))
 destination = args.output
 destination.mkdir(parents=True, exist_ok=True)
 index = []
