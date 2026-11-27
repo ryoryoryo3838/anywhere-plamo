@@ -97,10 +97,10 @@
         <select id="document-target" aria-label="ファイルの翻訳先の言語"></select><button class="text-button" id="document-original" aria-pressed="false">原文</button>
         <div class="document-zoom-controls"><button class="icon-button" id="document-zoom-out" aria-label="縮小">−</button><button class="text-button" id="document-zoom" title="幅に合わせる">100%</button><button class="icon-button" id="document-zoom-in" aria-label="拡大">＋</button></div>
       </div>
-      <div id="document-view"><div id="document-stage"><canvas id="document-canvas" aria-label="元のページ"></canvas><div id="document-overlay"></div></div></div>
+      <div id="document-view"><section id="document-source-pane"><h3 class="document-pane-title" hidden>原本</h3><div id="document-stage"><canvas id="document-canvas" aria-label="元のページ"></canvas><div id="document-overlay"></div></div></section><section id="document-translated-pane" hidden><div class="document-pane-header"><h3 class="document-pane-title">訳文</h3><span id="document-page-status" role="status"></span></div><div id="document-translated-stage"></div></section></div>
       <section id="document-detail" aria-label="選択した段落" hidden><button class="icon-button" id="document-detail-close" aria-label="段落を閉じる">×</button><p id="document-output" dir="auto" tabindex="0"></p><details><summary>原文</summary><p id="document-source" dir="auto"></p></details></section>
       <p id="document-status" role="status" aria-live="polite"></p>
-      <div class="document-actions"><button class="text-button" id="document-rotate">回転</button><button class="text-button" id="document-ocr">画像から読む</button><button class="text-button" id="document-copy">訳文をコピー</button><button class="button small" id="document-translate">訳し直す</button></div>
+      <div class="document-actions"><button class="text-button" id="document-rotate">回転</button><button class="text-button" id="document-ocr">画像から読む</button><button class="text-button" id="document-page-mode" hidden>ページごとに翻訳</button><button class="text-button" id="document-export" hidden>翻訳PDFを保存</button><button class="text-button" id="document-copy">訳文をコピー</button><button class="button small" id="document-translate">訳し直す</button></div>
     </dialog>
 
     <dialog id="camera-dialog" aria-labelledby="camera-title">

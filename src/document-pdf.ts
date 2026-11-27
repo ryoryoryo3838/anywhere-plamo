@@ -19,7 +19,7 @@ export class LocalPdf {
 
   async count(): Promise<number> { return (await this.task.promise).numPages; }
 
-  async page(number: number, canvas: HTMLCanvasElement, rotation: number): Promise<DocumentBlock[]> {
+  async page(number: number, canvas: HTMLCanvasElement, rotation: number, extractText = true): Promise<DocumentBlock[]> {
     const page = await (await this.task.promise).getPage(number);
     try {
       const initial = page.getViewport({ scale: 1, rotation: (page.rotate + rotation) % 360 });
@@ -29,6 +29,7 @@ export class LocalPdf {
       if (!context) throw new Error('ページを表示できません。');
       this.rendering = page.render({ canvas, canvasContext: context, viewport });
       await this.rendering.promise;
+      if (!extractText) return [];
       const content = await page.getTextContent();
       return pdfBlocks(content.items.filter(item => 'str' in item), content.styles, viewport.transform, viewport.width, viewport.height);
     } finally { this.rendering = undefined; page.cleanup(); }

@@ -1,3 +1,4 @@
+mod babeldoc;
 mod camera;
 mod dictionary;
 mod engine;
@@ -974,7 +975,13 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(update::State::default())
+        .manage(babeldoc::Sessions::default())
         .invoke_handler(tauri::generate_handler![
+            babeldoc::translate_babeldoc_pdf,
+            babeldoc::babeldoc_progress,
+            babeldoc::read_babeldoc_pdf,
+            babeldoc::save_babeldoc_pdf,
+            babeldoc::release_babeldoc_pdf,
             ocr_model::get_korean_ocr,
             ocr_model::set_korean_ocr,
             ocr_model::download_korean_ocr,

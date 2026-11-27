@@ -11,6 +11,12 @@
 .document-toolbar .icon-button { width: 28px; height: 28px; }
 #document-original[aria-pressed="true"] { background: var(--hover); color: var(--ink); }
 #document-view { flex: 1; min-height: 80px; overflow: auto; padding: 12px; background: var(--background); overscroll-behavior: contain; }
+#document-view.document-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; gap: 8px; }
+.document-comparison section { min-width: 0; overflow-x: auto; }
+.document-pane-header { display: flex; flex-wrap: wrap; gap: 0 6px; align-items: baseline; }
+.document-pane-title { margin: 0 0 4px; font-size: 12px; }
+#document-page-status { margin: 0; font-size: 11px; color: var(--muted); }
+#document-translated-stage canvas { display: block; width: 100%; height: auto; background: white; }
 #document-stage { position: relative; margin: 0 auto; background: #fff; box-shadow: 0 1px 8px #0002; overflow: hidden; }
 #document-canvas { display: block; width: 100%; height: auto; }
 #document-overlay { position: absolute; inset: 0; pointer-events: none; }

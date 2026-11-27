@@ -4,6 +4,10 @@ pub const MAX_CHARACTERS: usize = 12_000;
 pub const CONTEXT_TOKENS: usize = 8192;
 pub const MAX_INPUT_TOKENS: usize = 4096;
 
+pub fn supports_target(target: &str) -> bool {
+    ["ja", "en", "ko", "zh-hans", "fr", "de", "es"].contains(&target)
+}
+
 #[cfg_attr(not(any(test, mobile)), allow(dead_code))] // The mobile screen lens validates with it.
 pub fn prompt(text: &str, target: &str) -> Result<String, String> {
     prompt_with_glossary(text, target, &[])
@@ -21,7 +25,7 @@ pub fn prompt_with_glossary(
     if text.encode_utf16().count() > MAX_CHARACTERS {
         return Err("一度に翻訳できるのは12,000文字までです。文章を短く分けてください。".into());
     }
-    if !["ja", "en", "ko", "zh-hans", "fr", "de", "es"].contains(&target) {
+    if !supports_target(target) {
         return Err("翻訳先の言語を選び直してください。".into());
     }
     if text.contains("<|plamo:") {

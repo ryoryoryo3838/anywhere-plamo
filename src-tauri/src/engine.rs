@@ -50,6 +50,10 @@ enum TranslationChunk<'a> {
 }
 
 impl Engine {
+    pub fn endpoint(&self) -> (&str, &str) {
+        (&self.url, &self.key)
+    }
+
     pub fn alive(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
     }

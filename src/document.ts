@@ -1,3 +1,4 @@
+import { BabeldocViewer } from './babeldoc-viewer';
 import { invoke, progressChannel } from './backend';
 import { readingOrder, splitDocumentText, wrapText, type DocumentBlock } from './document-layout';
 import type { LocalPdf } from './document-pdf';
@@ -17,6 +18,29 @@ export function initDocument(available: () => boolean): { close: () => Promise<v
   const message = element('document-status');
   const detail = element('document-detail');
   let pdf: LocalPdf | null = null;
+  let book: BabeldocViewer | null = null;
+  let comparing = false;
+  const translatedPane = element('document-translated-pane');
+
+  function setComparison(enabled: boolean): void {
+    comparing = enabled;
+    translatedPane.hidden = !enabled;
+    if (!enabled) element('document-translated-stage').replaceChildren();
+    view.classList.toggle('document-comparison', enabled);
+    element('document-source-pane').querySelector('h3')!.hidden = !enabled;
+  }
+
+  async function startBook(chosen: File, run: number): Promise<void> {
+    await book?.close(); book = null;
+    const bytes = await chosen.arrayBuffer();
+    if (!current(run)) return;
+    book = new BabeldocViewer(bytes, target.value, count, element('document-translated-stage'), element('document-page-status'), () => {
+      if (dialog.open && book) { message.textContent = book.status; controls(); }
+    });
+    setComparison(true);
+    book.showPage(page, rotation);
+    message.textContent = book.status;
+  }
   let file: File | null = null;
   let page = 1, count = 1, rotation = 0, zoom = 1, generation = 0;
   let work: Promise<void> | null = null;
@@ -35,11 +59,19 @@ export function initDocument(available: () => boolean): { close: () => Promise<v
     }
     element<HTMLButtonElement>('document-previous').disabled = busy || page <= 1;
     element<HTMLButtonElement>('document-next').disabled = busy || page >= count;
-    translate.disabled = !!cancellation || (!work && !blocks.length);
-    translate.textContent = work ? '中止' : '訳し直す';
+    translate.disabled = comparing ? busy || !!book?.ready : !!cancellation || (!work && !blocks.length);
+    translate.textContent = comparing ? (!book ? '全ページを翻訳' : book.running ? '翻訳を中止' : '再試行') : work ? '中止' : '訳し直す';
+    translate.hidden = !!book?.ready;
+    if (book?.running) target.disabled = true;
     original.disabled = !outputs.some(Boolean);
     element<HTMLButtonElement>('document-copy').disabled = !outputs.some(Boolean);
-    element('document-ocr').hidden = !pdf;
+    const exportButton = element<HTMLButtonElement>('document-export');
+    exportButton.hidden = !comparing;
+    element('document-page-mode').hidden = !comparing || !!book;
+    element<HTMLButtonElement>('document-page-mode').disabled = busy;
+    exportButton.disabled = busy || !book?.ready;
+    element('document-ocr').hidden = !pdf || !!(book?.running || book?.ready);
+    original.hidden = comparing; element('document-copy').hidden = comparing;
     pageInput.value = String(page); pageInput.max = String(count);
     element('document-pages').textContent = `/ ${count}`;
   }
@@ -75,7 +107,8 @@ export function initDocument(available: () => boolean): { close: () => Promise<v
   function layout(): void {
     layoutFrame = null;
     if (!dialog.open || !canvas.width) return;
-    const width = Math.max(200, view.clientWidth - 24) * zoom;
+    const width = Math.max(comparing ? 80 : 200, comparing ? element('document-source-pane').clientWidth : view.clientWidth - 24) * zoom;
+    element('document-translated-stage').style.width = `${width}px`;
     stage.style.width = `${width}px`;
     element('document-zoom').textContent = `${Math.round(zoom * 100)}%`;
     const height = width * canvas.height / canvas.width;
@@ -130,9 +163,11 @@ export function initDocument(available: () => boolean): { close: () => Promise<v
 
   async function close(): Promise<void> {
     if (dialog.open) dialog.close();
+    const closingBook = book; book = null;
+    const releasing = closingBook?.close(); setComparison(false);
     const closingPdf = pdf; pdf = null;
     const destroying = closingPdf?.destroy().catch(() => {});
-    await stop(); await destroying;
+    await stop(); await destroying; await releasing;
     if (!dialog.open) { clear(); file = null; canvas.width = canvas.height = 0; }
   }
 
@@ -192,6 +227,19 @@ export function initDocument(available: () => boolean): { close: () => Promise<v
 
   async function readPage(run: number, forceOcr = false): Promise<void> {
     clear(); message.textContent = 'ページを読み込み中…';
+    if (pdf && comparing) {
+      book?.showPage(page, rotation);
+      await pdf.page(page, canvas, rotation, false);
+      if (!current(run)) return;
+      if (book) { book.showPage(page, rotation, canvas); message.textContent = book.status; }
+      else {
+        element('document-page-status').textContent = `${page} ページ · 未訳（原本を仮表示）`;
+        const copy = document.createElement('canvas'); copy.width = canvas.width; copy.height = canvas.height;
+        copy.getContext('2d')?.drawImage(canvas, 0, 0); element('document-translated-stage').replaceChildren(copy);
+        message.textContent = '翻訳先を選び、「全ページを翻訳」を押してください。';
+      }
+      paint(); return;
+    }
     if (pdf) blocks = await pdf.page(page, canvas, rotation);
     else if (file) {
       const image = new Image(); const url = URL.createObjectURL(file);
@@ -220,6 +268,7 @@ export function initDocument(available: () => boolean): { close: () => Promise<v
     if (!available() || work || cancellation) return;
     if (!dialog.open) { target.value = element<HTMLSelectElement>('target').value; dialog.showModal(); }
     run(async run => {
+      await book?.close(); book = null; setComparison(false);
       await pdf?.destroy(); pdf = null; file = null; clear(); canvas.width = canvas.height = 0;
       if (!current(run)) return;
       if (!/\.(pdf|png|jpe?g|webp)$/i.test(chosen.name)) throw new Error('PDF・PNG・JPEG・WebPを開けます。');
@@ -234,6 +283,7 @@ export function initDocument(available: () => boolean): { close: () => Promise<v
         const data = await chosen.arrayBuffer();
         if (!current(run)) return;
         pdf = new LocalPdf(data); count = await pdf.count();
+        if (current(run)) setComparison(true);
       }
       if (current(run)) { controls(); await readPage(run); }
     });
@@ -264,11 +314,34 @@ export function initDocument(available: () => boolean): { close: () => Promise<v
   element('document-previous').addEventListener('click', () => changePage(page - 1));
   element('document-next').addEventListener('click', () => changePage(page + 1));
   pageInput.addEventListener('change', () => changePage(Number(pageInput.value)));
-  target.addEventListener('change', () => { outputs = []; paint(); run(translateBlocks); });
+  target.addEventListener('change', () => {
+    const chosen = file;
+    if (comparing) {
+      if (book && chosen) run(async run => { await book?.close(); book = null; if (current(run)) await readPage(run); });
+      return;
+    }
+    outputs = []; paint(); run(translateBlocks);
+  });
+  element('document-export').addEventListener('click', () => run(async run => {
+    if (!book?.ready) return;
+    const path = await book.save();
+    if (current(run)) message.textContent = path ? `翻訳PDFを保存しました: ${path}` : '保存を取り消しました';
+  }));
   element('document-rotate').addEventListener('click', () => { rotation = (rotation + 90) % 360; run(run => readPage(run)); });
-  element('document-ocr').addEventListener('click', () => run(run => readPage(run, true)));
+  element('document-page-mode').addEventListener('click', () => { setComparison(false); run(run => readPage(run)); });
+  element('document-ocr').addEventListener('click', () => run(async run => {
+    // If BabelDOC cannot translate a scan, the existing explicit OCR viewer remains available.
+    await book?.close(); book = null; setComparison(false);
+    if (current(run)) await readPage(run, true);
+  }));
   original.addEventListener('click', () => { showingOriginal = !showingOriginal; original.setAttribute('aria-pressed', String(showingOriginal)); overlay.hidden = showingOriginal; });
   translate.addEventListener('click', () => {
+    if (comparing) {
+      const chosen = file;
+      if (book?.running) { const active = book; run(() => active.stop()); }
+      else if (!book?.ready && chosen) run(async run => { await startBook(chosen, run); if (current(run)) await readPage(run); });
+      return;
+    }
     if (work) { void stop().then(() => { message.textContent = '中止しました'; }); return; }
     outputs = []; paint(); run(translateBlocks);
   });

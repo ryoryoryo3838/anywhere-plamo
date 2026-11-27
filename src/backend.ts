@@ -33,7 +33,7 @@ export type ProgressEvent =
 interface NativeChannel<T> { onmessage: (message: T) => void }
 interface TauriBridge {
   core: {
-    invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>;
+    invoke<T>(command: string, args?: Record<string, unknown> | ArrayBuffer, options?: { headers: Record<string, string> }): Promise<T>;
     Channel: new <T>() => NativeChannel<T>;
   };
   event: { listen<T>(event: string, handler: (event: { payload: T }) => void): Promise<() => void> };
@@ -46,6 +46,11 @@ export const isDesktop = !!window.__TAURI__;
 export function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!window.__TAURI__) return Promise.reject(new Error('翻訳はアプリで利用できます。この画面はブラウザプレビューです。'));
   return window.__TAURI__.core.invoke<T>(command, args);
+}
+
+export async function translateBabeldocPdf(data: ArrayBuffer, target: string, job: string): Promise<void> {
+  if (!window.__TAURI__) throw new Error('デスクトップアプリから実行してください。');
+  return window.__TAURI__.core.invoke('translate_babeldoc_pdf', data, { headers: { 'x-target': target, 'x-job': job } });
 }
 
 export function progressChannel<T = ProgressEvent>(onmessage: (event: T) => void): NativeChannel<T> {

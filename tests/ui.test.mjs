@@ -8,8 +8,8 @@ const html = readFileSync(new URL('../dist/index.html', import.meta.url), 'utf8'
 const script = html.match(/<script[^>]+src="([^"]+)"/)[1];
 const bundle = readFileSync(new URL(`../dist${script}`, import.meta.url), 'utf8');
 
-async function until(predicate) {
-  for (let attempt = 0; attempt < 100; attempt++) {
+async function until(predicate, attempts = 100) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
     if (predicate()) return;
     await new Promise(resolve => setTimeout(resolve, 2));
   }
@@ -121,8 +121,8 @@ async function fixture(t, options = {}) {
   const native = {
     core: {
       Channel: class { onmessage = () => {}; },
-      invoke: async (command, args) => {
-        calls.push({ command, args });
+      invoke: async (command, args, invokeOptions) => {
+        calls.push({ command, args, ...(invokeOptions && { invokeOptions }) });
         switch (command) {
           case 'get_status': {
             const status = { ...state };
@@ -149,6 +149,15 @@ async function fixture(t, options = {}) {
             if (options.installError) throw options.installError;
             args.onEvent.onmessage({ kind: 'installing' });
             return;
+          case 'translate_babeldoc_pdf':
+            if (options.holdPdf) return new Promise((resolve, reject) => { finishOperation = resolve; rejectOperation = reject; });
+            return;
+          case 'babeldoc_progress': return options.pdfProgress ?? 0;
+          case 'read_babeldoc_pdf': return new Uint8Array([args.page === 0 ? 42 : 24]).buffer;
+          case 'release_babeldoc_pdf': return;
+          case 'save_babeldoc_pdf':
+            if (options.exportError) throw options.exportError;
+            return options.exportPath ?? null;
           case 'open_lens': return;
           case 'start_screen_lens':
             if (options.screenLensError) throw options.screenLensError;
@@ -241,6 +250,14 @@ async function fixture(t, options = {}) {
   const modules = new Map();
   async function loadModule(url, code) {
     if (modules.has(url)) return modules.get(url);
+    if (options.pdfViewer && new URL(url).pathname.includes('/assets/document-pdf-')) {
+      code = `export class LocalPdf {
+        constructor(data) { this.type = new Uint8Array(data)[0]; }
+        async count() { return this.type === 24 ? 1 : 2; }
+        async page(page, canvas) { canvas.width = 600; canvas.height = 800; canvas.dataset.pdf = this.type + ':' + page; return []; }
+        async destroy() {}
+      }`;
+    }
     const module = new SourceTextModule(code ?? readFileSync(new URL(`../dist${new URL(url).pathname}`, import.meta.url), 'utf8'), {
       context: dom.getInternalVMContext(), identifier: url,
       initializeImportMeta: meta => { meta.url = url; },
@@ -261,7 +278,9 @@ async function fixture(t, options = {}) {
     window, byId, calls, state, channels,
     cameraStreams, cameraRequests, cameraEncodings,
     openDocument(name = 'page.png', drop = false) {
-      const file = new window.File(['image'], name, { type: 'image/png' });
+      const data = name.endsWith('.pdf') ? '%PDF-test' : 'image';
+      const file = new window.File([data], name, { type: name.endsWith('.pdf') ? 'application/pdf' : 'image/png' });
+      file.arrayBuffer = async () => new TextEncoder().encode(data).buffer;
       if (drop) {
         const event = new window.Event('drop', { bubbles: true, cancelable: true });
         Object.defineProperty(event, 'dataTransfer', { value: { types: ['Files'], files: [file] } });
@@ -2391,6 +2410,7 @@ test('image documents translate locally, toggle the original, reveal paragraphs 
   await until(() => f.byId('document-status').textContent === '翻訳完了');
   assert.ok(f.calls.some(c => c.command === 'recognize_camera'));
   assert.ok(f.calls.some(c => c.command === 'translate'));
+  assert.equal(f.byId('document-export').hidden, true);
   f.click('document-original');
   assert.equal(f.byId('document-overlay').hidden, true);
   f.click('document-original');
@@ -2403,6 +2423,66 @@ test('image documents translate locally, toggle the original, reveal paragraphs 
   assert.ok(f.clipboard());
   f.click('document-close');
   await until(() => !f.byId('document-dialog').open && f.byId('document-canvas').width === 0);
+});
+
+for (const [options, expected] of [
+  [{ exportPath: '/chosen/book.pdf' }, '翻訳PDFを保存しました: /chosen/book.pdf'],
+  [{}, '保存を取り消しました'],
+  [{ exportError: '同名のファイルがあります。' }, '同名のファイルがあります。'],
+]) test(`PDF export reports ${expected} and leaves the viewer open`, async t => {
+  const f = await fixture(t, { document: true, pdfViewer: true, target: 'fr', ...options });
+  f.openDocument('book.pdf');
+  await until(() => f.byId('document-translate').textContent === '全ページを翻訳' && !f.byId('document-translate').disabled);
+  f.click('document-translate');
+  await until(() => !f.byId('document-export').hidden && !f.byId('document-export').disabled);
+  f.click('document-export');
+  await until(() => f.byId('document-status').textContent === expected);
+  const call = f.calls.find(c => c.command === 'translate_babeldoc_pdf');
+  assert.equal(new TextDecoder().decode(call.args), '%PDF-test');
+  assert.equal(call.invokeOptions.headers['x-target'], 'fr');
+  assert.equal(f.byId('document-dialog').open, true);
+});
+
+test('PDF pages stay aligned during a single translation and switch to the actual final output', async t => {
+  const options = { document: true, pdfViewer: true, holdPdf: true, pdfProgress: 0 };
+  const f = await fixture(t, options); f.openDocument('book.pdf');
+  const right = () => f.byId('document-translated-stage').querySelector('canvas');
+  await until(() => f.byId('document-translate').textContent === '全ページを翻訳' && !f.byId('document-translate').disabled);
+  assert.equal(f.calls.filter(c => c.command === 'translate_babeldoc_pdf').length, 0);
+  f.click('document-translate');
+  await until(() => f.byId('document-page-status').textContent.includes('翻訳中（原本を仮表示）'));
+  options.pdfProgress = 1;
+  await until(() => right()?.dataset.pdf === '24:1', 1000);
+  assert.equal(f.byId('document-canvas').dataset.pdf, '37:1');
+  assert.equal(f.byId('document-export').disabled, true);
+  f.click('document-next');
+  await until(() => f.byId('document-canvas').dataset.pdf === '37:2' && f.byId('document-page-status').textContent.includes('原本を仮表示'));
+  assert.ok(right());
+  f.finish();
+  await until(() => right()?.dataset.pdf === '42:2');
+  f.click('document-previous');
+  await until(() => right()?.dataset.pdf === '42:1');
+  f.click('document-export');
+  await until(() => f.calls.some(c => c.command === 'save_babeldoc_pdf'));
+  assert.equal(f.calls.filter(c => c.command === 'translate_babeldoc_pdf').length, 1);
+  assert.equal(f.calls.filter(c => c.command === 'translate').length, 0);
+  f.click('document-close');
+  await until(() => f.calls.some(c => c.command === 'release_babeldoc_pdf'));
+});
+
+test('stopping a PDF translation retains the source, disables saving and releases the native job on close', async t => {
+  const f = await fixture(t, { document: true, pdfViewer: true, holdPdf: true });
+  f.openDocument('book.pdf');
+  await until(() => f.byId('document-translate').textContent === '全ページを翻訳' && !f.byId('document-translate').disabled);
+  f.click('document-translate');
+  await until(() => f.byId('document-translate').textContent === '翻訳を中止' && !f.byId('document-translate').disabled);
+  f.click('document-translate');
+  await until(() => f.byId('document-status').textContent.includes('中止しました'));
+  assert.equal(f.byId('document-export').disabled, true);
+  assert.equal(f.byId('document-canvas').dataset.pdf, '37:1');
+  assert.equal(f.byId('document-page-status').textContent, '1 ページ · 未訳（原本を仮表示）');
+  f.click('document-close');
+  await until(() => f.calls.some(c => c.command === 'release_babeldoc_pdf'));
 });
 
 test('document cancellation waits for inference before a new file can run', async t => {
