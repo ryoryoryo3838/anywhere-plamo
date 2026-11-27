@@ -1,0 +1,12 @@
+[Unit]
+Description=Anywhere PLaMo local translation bridge for Zotero
+
+[Service]
+Type=simple
+ExecStart="%h/.local/share/anywhere-plamo-babeldoc/bin/python" -I "%h/Workspace/anywhere-plamo-babeldoc/zotero/bridge.py"
+UMask=0077
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

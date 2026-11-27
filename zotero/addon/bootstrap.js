@@ -1,6 +1,5 @@
 /* Zotero 10 bootstrapped add-on. The reader browser stays in its original parent. */
 const ORIGIN = 'http://127.0.0.1:17843';
-const PREF = 'extensions.anywhere-plamo.token';
 const HTML = 'http://www.w3.org/1999/xhtml';
 const BUTTON = 'anywhere-plamo-toolbar';
 const sessions = new Map(); // Tab ID, not item ID: the same PDF can be open twice.
@@ -13,17 +12,18 @@ function track(promise) {
   return promise;
 }
 
-function tokenPrompt(win) {
-  const value = { value: '' };
-  if (!Services.prompt.promptPassword(win, 'Anywhere PLaMo',
-    'ローカル翻訳サービスのトークンを入力してください。Zotero の設定に保存します。', value, null, {})) return false;
-  if (!value.value.trim()) return false;
-  Zotero.Prefs.set(PREF, value.value.trim(), true);
-  return true;
+async function localToken() {
+  const home = Services.dirsvc.get('Home', Components.interfaces.nsIFile).path;
+  const path = PathUtils.join(home, '.config', 'anywhere-plamo-zotero', 'token');
+  try {
+    const token = (await IOUtils.readUTF8(path, { maxBytes: 128 })).trim();
+    if (/^[A-Za-z0-9_-]{43}$/.test(token)) return token;
+  } catch (_) { /* Do not log token contents or store them in preferences. */ }
+  throw new Error('ローカルサービスの認証ファイルを読み込めません。サービスの導入状態を確認し、再試行してください。');
 }
 
 function message(status) {
-  if (status === 401 || status === 403) return '認証できません。「トークン設定」でサービスと同じトークンを入力してください。';
+  if (status === 401 || status === 403) return '認証できません。ローカルサービスの状態を確認し、再試行してください。';
   if (status === 413) return 'PDF がサービスのサイズ上限を超えています。小さい PDF でお試しください。';
   if (status === 429 || status === 503) return 'サービスが混み合っています。しばらく待って再試行してください。';
   return `翻訳サービスが HTTP ${status} を返しました。サービスの状態を確認して再試行してください。`;
@@ -162,9 +162,8 @@ function tick(s) {
 }
 
 async function start(s) {
-  s.token = Zotero.Prefs.get(PREF, true);
-  if (!s.token && tokenPrompt(s.win)) s.token = Zotero.Prefs.get(PREF, true);
-  if (!s.token) throw new Error('「トークン設定」でローカルサービスのトークンを入力してください。');
+  s.token = await localToken();
+  if (s.closed) return;
   const path = Zotero.Items.get(s.reader.itemID)?.getFilePath();
   let file;
   try {
@@ -195,12 +194,11 @@ function open(reader, readerDoc) {
   const bar = el('header');
   bar.style.cssText = 'display:flex;align-items:center;flex-wrap:wrap;gap:.5em;padding:.5em';
   const title = el('strong', '日本語訳');
-  const settings = el('button', 'トークン設定');
   const retry = el('button', '再試行');
   retry.hidden = true;
   const stop = el('button', '閉じる');
   stop.title = '訳文を閉じて、翻訳ジョブを終了します';
-  bar.append(title, settings, retry, stop);
+  bar.append(title, retry, stop);
   const status = el('div', 'PDF をローカルサービスに送信しています…');
   status.style.cssText = 'padding:0 .5em .5em;overflow-wrap:anywhere';
   status.setAttribute('role', 'status');
@@ -216,7 +214,6 @@ function open(reader, readerDoc) {
   sessions.set(reader.tabID, s);
   const restart = () => { close(s); open(reader, readerDoc); };
   retry.addEventListener('click', restart);
-  settings.addEventListener('click', () => { if (tokenPrompt(s.win)) restart(); });
   stop.addEventListener('click', () => close(s));
   image.addEventListener('error', () => { if (s.url) fail(s, new Error('訳文の画像を表示できません。再試行してください。')); });
   s.onUnload = () => close(s);
