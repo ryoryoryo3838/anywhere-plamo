@@ -162,6 +162,12 @@ class BridgeTests(unittest.TestCase):
                 with pymupdf.open() as part:
                     part.insert_pdf(final, from_page=ready - 1, to_page=ready - 1)
                     part.save(root / 'pages' / f'{ready}.pdf')
+                page_route = route + f'/pages/{ready}.pdf'
+                self.assertEqual(self.request('GET', page_route, Authorization='')[0], 401)
+                code, payload = self.request('GET', page_route)
+                self.assertEqual(code, 200)
+                self.assertEqual(payload, (root / 'pages' / f'{ready}.pdf').read_bytes())
+                self.assertEqual(self.request('GET', route + f'/pages/{ready + 1}.pdf')[0], 202)
                 path = route + '/preview.pdf'
                 code, body = self.request('GET', path)
                 self.assertEqual(code, 202)

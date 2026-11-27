@@ -392,6 +392,9 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(202, {'id': id_})
 
     def do_GET(self):
+        part = re.fullmatch(r'/jobs/([0-9a-f]{32})/pages/([1-9][0-9]{0,2})\.pdf', self.path)
+        if part:
+            return self.send_pdf(part[1], 'page', int(part[2]))
         match = re.fullmatch(r'/jobs/([0-9a-f]{32})/(document|preview)\.pdf', self.path)
         if match:
             return self.send_pdf(match[1], match[2])
@@ -417,12 +420,18 @@ class Handler(BaseHTTPRequestHandler):
         with self.bridge.lock:
             self.send_status_or_png()
 
-    def send_pdf(self, id_, kind):
+    def send_pdf(self, id_, kind, number=None):
         with self.bridge.lock:
             job = self.bridge.jobs.get(id_)
             if job is None:
                 return self.reply(404, {'error': 'Job not found.'})
-            code, path = job.pdf_path(kind, job.status())
+            if kind == 'page':
+                if number is None or not 1 <= number <= MAX_PAGES:
+                    return self.reply(404, {'error': 'Invalid page.'})
+                path = job.directory / 'pages' / f'{number}.pdf'
+                code = 200 if path.is_file() else 202
+            else:
+                code, path = job.pdf_path(kind, job.status())
             if code == 202:
                 return self.reply(202, {'state': 'not-ready'})
             if code == 413:
