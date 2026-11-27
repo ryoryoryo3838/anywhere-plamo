@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Opt-in loopback PDF translation bridge. Run with the BabelDOC Python environment."""
 import argparse
+import importlib.util
 import contextlib
 from dataclasses import dataclass
 from http.client import HTTPConnection
@@ -10,10 +11,12 @@ import math
 import os
 from pathlib import Path
 import re
+import resource
 import secrets
 import shutil
 import signal
 import socket
+from socketserver import ThreadingMixIn
 import stat
 import subprocess
 import sys
@@ -28,6 +31,11 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = ROOT / 'src-tauri/resources/runtime'
 MODEL = Path.home() / '.local/share/app.anywhere-plamo.desktop/models/plamo-3-translate-2b-Q4_K_M.gguf'
 TOKEN = Path.home() / '.config/anywhere-plamo-zotero/token'
+_selection_spec = importlib.util.spec_from_file_location('plamo_selection', Path(__file__).with_name('selection_engine.py'))
+if _selection_spec is None or _selection_spec.loader is None:
+    raise ImportError('Bundled selection engine not found.')
+selection = importlib.util.module_from_spec(_selection_spec)
+_selection_spec.loader.exec_module(selection)
 PORT = 17843
 MAX_BODY = 64 * 1024 * 1024
 MAX_PAGES = 500
@@ -60,6 +68,57 @@ def pairing_token(path):
 
 class JobError(Exception):
     """Only fixed, document-independent messages may be exposed to clients."""
+
+
+def build_preview(directory, pages):
+    # Isolate expensive MuPDF work from control requests and the PNG renderer.
+    resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_BODY, MAX_BODY))
+    resource.setrlimit(resource.RLIMIT_AS, (1024**3, 1024**3))
+    resource.setrlimit(resource.RLIMIT_CPU, (90, 90))
+    staging = directory / 'preview.partial'
+    try:
+        with pymupdf.open(directory / 'input.pdf') as doc:
+            total = len(doc)
+            if not 1 <= pages <= total <= MAX_PAGES:
+                return 1
+            part_bytes = 0
+            for index in range(pages):
+                part = directory / 'pages' / f'{index + 1}.pdf'
+                part_bytes += part.stat().st_size
+                if part_bytes > 4 * MAX_BODY:
+                    return 2
+                with pymupdf.open(part) as translated:
+                    if len(translated) != 1:
+                        return 1
+                    doc.insert_pdf(translated)
+                # Keep the original xref for bookmarks and links from remaining
+                # pages. The grafted page can have a different page-tree parent.
+                target = doc.page_xref(index)
+                parent = doc.xref_get_key(target, 'Parent')[1]
+                doc.xref_copy(doc.page_xref(total + index), target)
+                doc.xref_set_key(target, 'Parent', parent)
+            doc.delete_pages(from_page=total, to_page=len(doc) - 1)
+            doc.save(staging, garbage=3, deflate=True)
+        staging.replace(directory / 'preview.pdf')
+        return 0
+    except Exception:
+        return 2 if staging.exists() and staging.stat().st_size >= MAX_BODY else 1
+    finally:
+        staging.unlink(missing_ok=True)
+
+
+def layout_digest(pdf):
+    """Identify visible page layouts, not volatile PDF IDs or creation dates."""
+    import hashlib
+    digest = hashlib.sha256(b'plamo-page-layout-v1\0')
+    with pymupdf.open(pdf) as document:
+        for page in document:
+            digest.update(json.dumps([list(page.rect), page.rotation, page.get_text('words')],
+                                     ensure_ascii=False, separators=(',', ':')).encode())
+            scale = 128 / max(page.rect.width, page.rect.height)
+            digest.update(page.get_pixmap(matrix=pymupdf.Matrix(scale, scale),
+                                         colorspace=pymupdf.csGRAY, alpha=False).samples)
+    return digest.hexdigest()
 
 
 def worker(directory):
@@ -101,6 +160,13 @@ def worker(directory):
                 time.sleep(.2)
             else:
                 continue
+            # Private handoff for other local translation requests, never part
+            # of the job API. Publish only after authenticated engine readiness.
+            metadata = directory / 'engine.json'
+            staging = directory / 'engine.partial'
+            with os.fdopen(os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w') as file:
+                json.dump({'port': port, 'key': key}, file)
+            staging.replace(metadata)
             result = subprocess.run([sys.executable, '-I', ROOT / 'scripts/babeldoc_pdf.py',
                                      'input.pdf', 'output.pdf', '--target', 'ja', '--preview-dir', 'pages',
                                      '--server-url', f'http://127.0.0.1:{port}'], cwd=directory,
@@ -108,10 +174,15 @@ def worker(directory):
             if result.returncode or not all((directory / 'pages' / f'{n}.pdf').is_file()
                                            for n in range(1, expected + 1)):
                 raise JobError('BabelDOC translation failed; check the PDF and local BabelDOC assets.')
+            (directory / 'layout.sha256').write_text(layout_digest(directory / 'output.pdf'))
             return
         finally:
-            engine.kill()
-            engine.wait()
+            try:
+                (directory / 'engine.json').unlink(missing_ok=True)
+                (directory / 'engine.partial').unlink(missing_ok=True)
+            finally:
+                engine.kill()
+                engine.wait()
     raise JobError('Could not start the bundled llama-server. Check the runtime, model and available memory.')
 
 
@@ -121,6 +192,29 @@ class Job:
     worker: subprocess.Popen
     created: float
     pages: int = 0
+    preview_worker: subprocess.Popen | None = None
+    preview_pages: int = 0
+
+    def pdf_path(self, kind, status):
+        if status['state'] == 'failed':
+            return 422, None
+        if status['state'] == 'done':
+            return 200, self.directory / 'output.pdf'
+        if kind == 'document' or not self.pages:
+            return 202, None
+        if self.preview_worker is not None:
+            code = self.preview_worker.poll()
+            if code is None:
+                return 202, None
+            if self.preview_pages == self.pages:
+                if code == 0:
+                    return 200, self.directory / 'preview.pdf'
+                return (413 if code in (2, -signal.SIGXFSZ) else 422), None
+        self.preview_pages = self.pages
+        self.preview_worker = subprocess.Popen(
+            [sys.executable, '-I', Path(__file__).resolve(), '--preview', self.directory, str(self.pages)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return 202, None
 
     def status(self):
         code = self.worker.poll()
@@ -130,9 +224,16 @@ class Job:
             error = self.directory / 'error'
             return {'state': 'failed', 'pages': self.pages,
                     'error': error.read_text() if error.exists() else 'Translation worker failed.'}
-        return {'state': 'running' if code is None else 'done', 'pages': self.pages}
+        status = {'state': 'running' if code is None else 'done', 'pages': self.pages}
+        layout = self.directory / 'layout.sha256'
+        if code == 0 and layout.is_file():
+            status['layoutDigest'] = layout.read_text()
+        return status
 
     def release(self):
+        if self.preview_worker is not None:
+            self.preview_worker.kill()
+            self.preview_worker.wait()
         if self.worker.poll() is None:
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(self.worker.pid, signal.SIGKILL)
@@ -140,19 +241,38 @@ class Job:
         shutil.rmtree(self.directory)
 
 
-class Bridge(HTTPServer):
+class Bridge(ThreadingMixIn, HTTPServer):
     def __init__(self, port, token, work):
         self.token = token
         self.work = work
         self.jobs = {}
+        self.lock = threading.RLock()
+        self.slots = threading.BoundedSemaphore(8)
         super().__init__(('127.0.0.1', port), Handler)
 
     def service_actions(self):
-        for id_, job in list(self.jobs.items()):
-            if time.monotonic() - job.created >= LIFETIME:
-                self.jobs.pop(id_).release()
+        with self.lock:
+            for id_, job in list(self.jobs.items()):
+                if time.monotonic() - job.created >= LIFETIME:
+                    self.jobs.pop(id_).release()
+
+    def process_request(self, request, client_address):
+        if not self.slots.acquire(blocking=False):
+            return self.shutdown_request(request)
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self.slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.slots.release()
 
     def server_close(self):
+        selection.cleanup_selection(self)
         super().server_close()
         while self.jobs:
             self.jobs.popitem()[1].release()
@@ -182,13 +302,16 @@ class Handler(BaseHTTPRequestHandler):
     def reply(self, status, body, mime='application/json'):
         if mime == 'application/json':
             body = json.dumps(body).encode()
+        self.reply_headers(status, len(body), mime)
+        self.wfile.write(body)
+
+    def reply_headers(self, status, length, mime):
         self.send_response(status)
         self.send_header('Content-Type', mime)
-        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Content-Length', str(length))
         self.send_header('Cache-Control', 'no-store')
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.end_headers()
-        self.wfile.write(body)
 
     def parse_request(self):
         if not super().parse_request():
@@ -205,6 +328,12 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def do_POST(self):
+        if self.path == '/translate-selection':
+            return selection.handle_selection(self)
+        with self.bridge.lock:
+            self.upload_job()
+
+    def upload_job(self):
         if self.path != '/jobs':
             return self.reply(404, {'error': 'Not found.'})
         if self.headers.get_all('Content-Type') != ['application/pdf'] or self.headers.get_all('X-Target') != ['ja']:
@@ -229,6 +358,7 @@ class Handler(BaseHTTPRequestHandler):
                         return self.reply(400, {'error': 'Incomplete upload.'})
                     output.write(chunk)
                     size -= len(chunk)
+            selection.yield_idle_selection(self.bridge)
             process = subprocess.Popen([sys.executable, '-I', Path(__file__).resolve(), '--worker', directory],
                                        cwd=directory, start_new_session=True, stdin=subprocess.DEVNULL,
                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -239,6 +369,37 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(202, {'id': id_})
 
     def do_GET(self):
+        match = re.fullmatch(r'/jobs/([0-9a-f]{32})/(document|preview)\.pdf', self.path)
+        if match:
+            return self.send_pdf(match[1], match[2])
+        with self.bridge.lock:
+            self.send_status_or_png()
+
+    def send_pdf(self, id_, kind):
+        with self.bridge.lock:
+            job = self.bridge.jobs.get(id_)
+            if job is None:
+                return self.reply(404, {'error': 'Job not found.'})
+            code, path = job.pdf_path(kind, job.status())
+            if code == 202:
+                return self.reply(202, {'state': 'not-ready'})
+            if code == 413:
+                return self.reply(413, {'error': 'PDF exceeds size limit.'})
+            if path is None:
+                return self.reply(422, {'error': 'PDF unavailable.'})
+            try:
+                file = path.open('rb')
+            except OSError:
+                return self.reply(422, {'error': 'PDF unavailable.'})
+        # An open descriptor remains valid across snapshot replacement or DELETE.
+        with file:
+            size = os.fstat(file.fileno()).st_size
+            if size > MAX_BODY:
+                return self.reply(413, {'error': 'PDF exceeds size limit.'})
+            self.reply_headers(200, size, 'application/pdf')
+            shutil.copyfileobj(file, self.wfile, length=65536)
+
+    def send_status_or_png(self):
         match = re.fullmatch(r'/jobs/([0-9a-f]{32})(?:/pages/([1-9][0-9]{0,2})\.png)?', self.path)
         job = self.bridge.jobs.get(match[1]) if match else None
         if not match or not job:
@@ -262,6 +423,10 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(200, png, 'image/png')
 
     def do_DELETE(self):
+        with self.bridge.lock:
+            self.delete_job()
+
+    def delete_job(self):
         match = re.fullmatch('/jobs/([0-9a-f]{32})', self.path)
         job = self.bridge.jobs.pop(match[1], None) if match else None
         if not job:
@@ -274,7 +439,10 @@ def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--worker', type=Path, help=argparse.SUPPRESS)
+    parser.add_argument('--preview', nargs=2, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.preview:
+        return build_preview(Path(args.preview[0]), int(args.preview[1]))
     if args.worker:
         try:
             worker(args.worker)
