@@ -68,13 +68,18 @@ def worker(directory):
             raise JobError('Unsupported, encrypted or oversized PDF.')
         expected = len(doc)
     key = secrets.token_urlsafe(32)
-    for binary in (RUNTIME / 'llama-server-cuda', RUNTIME / 'llama-server'):
+    cuda = RUNTIME / 'llama-server-cuda'
+    # Default auto-fit reserves 1 GiB, which can push much of a small model onto
+    # the CPU even when all its layers would fit. Try full offload first, then
+    # keep automatic fitting and CPU as fallbacks on memory-limited machines.
+    for binary, backend_args in ((cuda, ['--gpu-layers', 'all']), (cuda, []),
+                                 (RUNTIME / 'llama-server', [])):
         if not binary.is_file():
             continue
         with socket.socket() as reservation:
             reservation.bind(('127.0.0.1', 0))
             port = reservation.getsockname()[1]
-        command = [binary, '--model', MODEL, '--host', '127.0.0.1', '--port', str(port),
+        command = [binary, *backend_args, '--model', MODEL, '--host', '127.0.0.1', '--port', str(port),
                    '--alias', 'plamo-3-translate', '--ctx-size', '8192', '--parallel', '1',
                    '--cache-ram', '0', '--threads', '8', '--no-webui', '--no-warmup', '--offline', '--log-disable']
         try:
