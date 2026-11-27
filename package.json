@@ -15,6 +15,7 @@
     "ocr:build": "python3 scripts/build-ocr.py",
     "android:prepare": "python3 scripts/build-android.py",
     "benchmark": "python3 scripts/benchmark.py",
+    "test:pdf-assets": "node --test tests/pdf-assets.test.mjs",
     "test:protocol": "python3 scripts/test-protocol.py",
     "test:ui": "node --experimental-vm-modules --test --test-isolation=none tests/ui.test.mjs tests/camera.test.mjs tests/document.test.mjs"
   },

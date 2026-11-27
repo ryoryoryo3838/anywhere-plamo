@@ -1,7 +1,9 @@
 import { getDocument, GlobalWorkerOptions, type PDFDocumentLoadingTask, type RenderTask } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { pdfBlocks, type DocumentBlock } from './document-layout';
 
-GlobalWorkerOptions.workerSrc = new URL('/pdfjs/pdf.worker.mjs', location.href).href;
+import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
+
+GlobalWorkerOptions.workerSrc = workerUrl;
 
 export class LocalPdf {
   private task: PDFDocumentLoadingTask;
