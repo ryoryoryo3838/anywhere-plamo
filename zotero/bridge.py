@@ -37,7 +37,9 @@ if _selection_spec is None or _selection_spec.loader is None:
 selection = importlib.util.module_from_spec(_selection_spec)
 _selection_spec.loader.exec_module(selection)
 PORT = 17843
-MAX_BODY = 64 * 1024 * 1024
+MAX_BODY = 128 * 1024 * 1024  # Original PDF upload
+MAX_PREVIEW = 64 * 1024 * 1024
+MAX_FINAL = 256 * 1024 * 1024
 MAX_PAGES = 500
 MAX_JOBS = 4  # Retained results; only one active model at a time.
 LIFETIME = 3600
@@ -72,7 +74,7 @@ class JobError(Exception):
 
 def build_preview(directory, pages):
     # Isolate expensive MuPDF work from control requests and the PNG renderer.
-    resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_BODY, MAX_BODY))
+    resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_PREVIEW, MAX_PREVIEW))
     resource.setrlimit(resource.RLIMIT_AS, (1024**3, 1024**3))
     resource.setrlimit(resource.RLIMIT_CPU, (90, 90))
     staging = directory / 'preview.partial'
@@ -85,7 +87,7 @@ def build_preview(directory, pages):
             for index in range(pages):
                 part = directory / 'pages' / f'{index + 1}.pdf'
                 part_bytes += part.stat().st_size
-                if part_bytes > 4 * MAX_BODY:
+                if part_bytes > 4 * MAX_PREVIEW:
                     return 2
                 with pymupdf.open(part) as translated:
                     if len(translated) != 1:
@@ -102,7 +104,7 @@ def build_preview(directory, pages):
         staging.replace(directory / 'preview.pdf')
         return 0
     except Exception:
-        return 2 if staging.exists() and staging.stat().st_size >= MAX_BODY else 1
+        return 2 if staging.exists() and staging.stat().st_size >= MAX_PREVIEW else 1
     finally:
         staging.unlink(missing_ok=True)
 
@@ -394,7 +396,7 @@ class Handler(BaseHTTPRequestHandler):
         # An open descriptor remains valid across snapshot replacement or DELETE.
         with file:
             size = os.fstat(file.fileno()).st_size
-            if size > MAX_BODY:
+            if size > (MAX_FINAL if path.name == 'output.pdf' else MAX_PREVIEW):
                 return self.reply(413, {'error': 'PDF exceeds size limit.'})
             self.reply_headers(200, size, 'application/pdf')
             shutil.copyfileobj(file, self.wfile, length=65536)

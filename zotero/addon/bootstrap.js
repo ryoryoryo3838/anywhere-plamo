@@ -22,9 +22,9 @@ async function localToken() {
   throw new Error('ローカルサービスの認証ファイルを読み込めません。サービスの導入状態を確認し、再試行してください。');
 }
 
-function message(status) {
+function message(status, kind) {
   if (status === 401 || status === 403) return '認証できません。ローカルサービスの状態を確認し、再試行してください。';
-  if (status === 413) return 'PDF がサービスのサイズ上限を超えています。小さい PDF でお試しください。';
+  if (status === 413) return kind === 'pdf' ? '完成した翻訳PDFが表示上限（256 MiB）を超えました。原本を章ごとに分けてお試しください。' : '原本PDFが送信上限（128 MiB）を超えました。章ごとに分けてお試しください。';
   if (status === 429 || status === 503) return 'サービスが混み合っています。しばらく待って再試行してください。';
   return `翻訳サービスが HTTP ${status} を返しました。サービスの状態を確認して再試行してください。`;
 }
@@ -40,7 +40,12 @@ async function request(s, path, method, kind, body) {
       credentials: 'omit', redirect: 'error', cache: 'no-store' });
     if (kind === 'snapshot' && [202, 404, 409, 425].includes(response.status)) return null;
     if (method === 'DELETE' && response.status === 404) return;
-    if (!response.ok) throw new Error(message(response.status));
+    if (kind === 'snapshot' && response.status === 413) {
+      s.skipPreview = true;
+      s.status.textContent = '途中プレビューが大きいため、表示更新を省略します。翻訳は続行中です。';
+      return null;
+    }
+    if (!response.ok) throw new Error(message(response.status, kind));
     if (kind === 'snapshot' || kind === 'pdf') {
       if (response.headers.get('Content-Type')?.split(';')[0].trim() !== 'application/pdf') throw new Error('PDF を取得できません。サービスのバージョンを確認してください。');
       return new Uint8Array(await response.arrayBuffer());
@@ -105,7 +110,7 @@ async function refresh(s) {
   }
   if (!['running', 'done'].includes(status.state) || !Number.isInteger(status.pages) || status.pages < 0) throw new Error('ジョブ状態を読み取れません。サービスのバージョンを確認してください。');
   const final = status.state === 'done';
-  if (!final && status.pages === s.shown) return;
+  if (!final && (s.skipPreview || status.pages === s.shown)) return;
   if (!final && !status.pages) { s.status.textContent = '最初の翻訳ページを待っています…'; return; }
   const bytes = await request(s, `${s.path}/${final ? 'document' : 'preview'}.pdf`, 'GET', final ? 'pdf' : 'snapshot');
   if (!bytes || s.closed) return;

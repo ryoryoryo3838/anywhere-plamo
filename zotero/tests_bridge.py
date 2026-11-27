@@ -161,7 +161,9 @@ class BridgeTests(unittest.TestCase):
         for name in ('document', 'preview'):
             path = f'{route}/{name}.pdf'
             self.assertEqual(self.request('GET', path), (200, (root / 'output.pdf').read_bytes()))
-            with patch.object(bridge, 'MAX_BODY', 100):
+            with patch.object(bridge, 'MAX_PREVIEW', 100):
+                self.assertEqual(self.request('GET', path)[0], 200)  # Final file uses its own limit.
+            with patch.object(bridge, 'MAX_FINAL', 100):
                 self.assertEqual(self.request('GET', path)[0], 413)
         # Hold a download mid-transfer; status and release must still work,
         # and unlinking the job must not truncate the already-open download.

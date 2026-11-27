@@ -63,6 +63,23 @@ test('polls by completion count, switches to final even when page count is uncha
   assert.equal(s.done, true);
 });
 
+test('an oversized preview does not cancel translation or block the final document', async () => {
+  let polls = 0;
+  const paths = [];
+  const ctx = context({setTimeout, clearTimeout, fetch: async url => {
+    paths.push(url);
+    if (url.endsWith('preview.pdf')) return {status: 413};
+    if (url.endsWith('document.pdf')) return {ok: true, headers: {get: () => 'application/pdf'}, arrayBuffer: async () => new ArrayBuffer(1)};
+    return {ok: true, json: async () => ({state: ++polls === 3 ? 'done' : 'running', pages: polls})};
+  }});
+  const s = {win: {AbortController}, path: '/jobs/example', status: {}};
+  ctx.displayPDF = async (_, bytes, final) => assert.ok(final && bytes.byteLength === 1);
+  await ctx.refresh(s); assert.equal(s.skipPreview, true);
+  await ctx.refresh(s); await ctx.refresh(s);
+  assert.equal(paths.filter(url => url.endsWith('preview.pdf')).length, 1);
+  assert.equal(s.done, true);
+});
+
 test('reload uses immediate right-side location; only final opens the private annotation store', async () => {
   const ctx = context({ Components: { utils: { cloneInto: x => structuredClone(x) } }, Zotero: { Promise: { delay: async () => {} } } });
   const calls = [], store = { annotations: [{ id: 'existing' }] };
