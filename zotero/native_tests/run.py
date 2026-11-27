@@ -1,4 +1,5 @@
 """Run the packaged extension inside a fresh, network-isolated Zotero 10.0.8."""
+from collections import Counter
 from pathlib import Path
 import hashlib
 import json
@@ -48,7 +49,13 @@ with (p/'native.log').open('w') as log:
     result=sp.run(cmd, stdout=log, stderr=sp.STDOUT, timeout=180)
 records = [json.loads(s) for s in (p/'result.jsonl').read_text().splitlines()]
 print(json.dumps(records, ensure_ascii=False, indent=2)); result.check_returncode()
-if not records or records[-1]['stage'] != 'PASS': raise SystemExit(1)
 requests = [json.loads(s) for s in (p/'requests.jsonl').read_text().splitlines()]
-assert all(r['auth'] and r['status'] < 400 for r in requests), requests
-assert sum(r['method']=='POST' for r in requests)==sum(r['method']=='DELETE' for r in requests)==2, requests
+inventory = Counter(f"{r['method']} {r['path']} {r['status']}" for r in requests)
+print('Request inventory:', json.dumps(inventory, indent=2), flush=True)
+assert all(r['auth'] and r['status'] < 400 for r in requests), inventory
+if not records or records[-1]['stage'] != 'PASS': raise SystemExit(1)
+assert sum(r['method']=='POST' for r in requests)==2, inventory
+for n, artifacts in [(1,['pages/1.pdf','pages/2.pdf','document.pdf']), (2,['document.pdf'])]:
+    path = f'/jobs/{n:032x}'
+    assert inventory[f'DELETE {path} 200']==1, inventory
+    assert [r['path'][len(path)+1:] for r in requests if r['path'].startswith(path+'/')] == artifacts, inventory

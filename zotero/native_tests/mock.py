@@ -23,15 +23,18 @@ class Mock(BaseHTTPRequestHandler):
             else: status = 422
         elif len(parts)>=2 and parts[0]=='jobs' and parts[1] in jobs:
             done = (root/'finish-job').exists()
+            pages = 2 if done or (root/'release-page-2').exists() else int((root/'release-page-1').exists())
             if self.command=='DELETE' and len(parts)==2:
                 jobs.remove(parts[1]); status=200
             elif self.command=='GET' and len(parts)==2:
-                status,body = 200, {'state':'done' if done else 'running', 'pages':2 if done else 1}
-            elif self.command=='GET' and parts[2:] in (['document.pdf'], ['preview.pdf']):
-                if parts[2]=='document.pdf' and not done: status=202
-                else:
-                    name='final' if parts[2]=='document.pdf' else 'preview'
-                    status,body,mime=200,(root/f'fixtures/{name}.pdf').read_bytes(),'application/pdf'
+                status,body = 200, {'state':'done' if done else 'running', 'pages':pages}
+            elif self.command=='GET' and parts[2:]==['document.pdf'] and done:
+                status,body,mime = 200,(root/'fixtures/final.pdf').read_bytes(),'application/pdf'
+            elif self.command=='GET' and len(parts)==4 and parts[2]=='pages':
+                for n in range(1,pages+1):
+                    if parts[3]==f'{n}.pdf' and not done:
+                        status,body,mime = 200,(root/f'fixtures/page-{n}.pdf').read_bytes(),'application/pdf'
+            # All other routes (including legacy /preview.pdf) deliberately return 404.
         data=body if isinstance(body,bytes) else json.dumps(body).encode()
         print(json.dumps(dict(method=self.command,path=self.path,status=status,auth=auth)),flush=True)
         self.send_response(status); self.send_header('Content-Type',mime); self.send_header('Content-Length',str(len(data))); self.end_headers(); self.wfile.write(data)

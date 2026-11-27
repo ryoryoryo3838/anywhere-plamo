@@ -12,6 +12,7 @@ function saveTranslated(s, method, entries) {
 }
 
 function closeNative(s) {
+  disposePageDocuments(s);
   // Copy pending edits before disposing of their content realm.
   if (s.store) {
     const changes = s.right?._annotationManager?._unsavedAnnotations;
@@ -109,8 +110,77 @@ function stopScrollSync(s) {
   if (s.frame != null) s.win.cancelAnimationFrame(s.frame);
 }
 
+function disposePageDocuments(s) {
+  for (const { task } of s.pageDocuments?.values() || []) track(task.destroy().catch(() => {}));
+  s.pageDocuments?.clear();
+}
+
+// Status.pages is a contiguous ready prefix. Keep a small moving window,
+// independent of how many pages the translator has already published.
+async function updateReadyPages(s, ready) {
+  if (!ready) return;
+  const view = s.right._primaryView;
+  const frame = view._iframeWindow;
+  const app = frame.PDFViewerApplication;
+  const pdf = app.pdfViewer;
+  const top = pageAnchor(pdf)?.index;
+  if (top == null) return;
+  const visible = pdf._getVisiblePages().views.map(v => v.id - 1);
+  const wanted = new Set([...visible, top, (visible.at(-1) ?? top) + 1, top - 1]
+    .filter(i => i >= 0 && i < Math.min(ready, pdf.pagesCount)).slice(0, 8));
+  const cache = s.pageDocuments ??= new Map();
+  for (const [i, entry] of cache) {
+    if (wanted.has(i)) continue;
+    const pv = pdf.getPageView(i);
+    view._handlePageDestroy(pv);
+    pv._optionalContentConfigPromise = entry.originalConfig;
+    pv.setPdfPage(entry.original);
+    cache.delete(i);
+    await entry.task.destroy();
+    if (s.closed) return;
+  }
+  for (const i of wanted) {
+    const path = `${s.path}/pages/${i + 1}.pdf`;
+    if (cache.has(i)) {
+      // Zotero clears selection geometry when its canvas buffer evicts a page.
+      view._pdfPages[i] = cache.get(i).data;
+      continue;
+    }
+    if (s.oversizePages?.has(path)) continue;
+    const bytes = await request(s, path, 'GET', 'page');
+    if (s.closed) return;
+    if (!bytes) continue;
+    // Clone into the inner PDF.js realm (in particular its Uint8Array).
+    const args = Components.utils.cloneInto({ data: bytes, isEvalSupported: false,
+      cMapUrl: frame.PDFViewerApplicationOptions.get('cMapUrl'), cMapPacked: true,
+      standardFontDataUrl: frame.PDFViewerApplicationOptions.get('standardFontDataUrl'),
+      wasmUrl: frame.PDFViewerApplicationOptions.get('wasmUrl') }, frame);
+    const task = frame.pdfjsLib.getDocument(args);
+    try {
+      // Await crosses back into bootstrap's privileged realm. Waive the
+      // Xray wrapper on these trusted PDF.js objects to see prototype APIs.
+      const doc = Components.utils.waiveXrays(await task.promise);
+      if (doc.numPages !== 1) throw new Error('途中翻訳のページ数が正しくありません。');
+      const [page, data, original] = await Promise.all([doc.getPage(1),
+        doc.getPageData(Components.utils.cloneInto({ pageIndex: 0 }, frame)), app.pdfDocument.getPage(i + 1)]);
+      if (s.closed) return;
+      const pv = pdf.getPageView(i);
+      const originalConfig = pv._optionalContentConfigPromise;
+      view._handlePageDestroy(pv);
+      pv._optionalContentConfigPromise = doc.getOptionalContentConfig();
+      pv.setPdfPage(Components.utils.waiveXrays(page));
+      view._pdfPages[i] = Components.utils.waiveXrays(data);
+      cache.set(i, { task, original, originalConfig, data });
+      pdf.update();
+    } finally {
+      if (!cache.has(i)) await task.destroy();
+    }
+  }
+}
+
 async function displayPDF(s, bytes, final, layoutDigest) {
   const first = !s.right;
+  if (!first && !final) throw new Error('途中翻訳では文書全体を再読み込みできません。');
   const validLayout = typeof layoutDigest === 'string' && /^[0-9a-f]{64}$/.test(layoutDigest);
   const identity = final && (validLayout ? layoutDigest : await pdfDigest(s.win, bytes));
   const store = final && await createTranslationAnnotationStore(s.item, 'ja', s.digest, identity);
@@ -138,6 +208,7 @@ async function displayPDF(s, bytes, final, layoutDigest) {
       const loc = pdf._location;
       if (loc) s.right._state.primaryViewState = clone({ pageIndex: loc.pageNumber - 1,
         scale: loc.scale, top: loc.top, left: loc.left, scrollMode: pdf.scrollMode, spreadMode: pdf.spreadMode });
+      disposePageDocuments(s);
       s.right.reload(clone({ buf: bytes }));
     }
     let ready = false;

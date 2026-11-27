@@ -16,6 +16,19 @@
   const translated = (n, expected) => until(`page ${n} contains ${expected}`,async()=>{
     const app=pdf(internal()); return app?.pdfDocument && (await text(app,n)).includes(expected) && app;
   });
+  // A native proxy exposes translated glyphs; a canvas overlay may leave the
+  // original PDF's text alone. In that case accept the painted page marker.
+  const progressive = n => until(`painted translation for page ${n}`, async () => {
+    const app=pdf(internal()), pv=app?.pdfViewer?.getPageView(n-1), page=pv?.div;
+    if (!page || pv.renderingState!==3) return false;
+    const marker=`[data-anywhere-plamo-page="${n}"]`;
+    if (page.matches(marker) || page.querySelector(marker)) return app;
+    // Read the page actually attached to the painted view, not the source
+    // pdfDocument: page proxies can come from independent one-page files.
+    const glyphs=await pv.pdfPage.getTextContent();
+    return (page.innerText?.includes(`Translated page ${n} paragraph 1.`) ||
+      glyphs.items.map(i=>i.str).join(' ').includes(`Translated page ${n} paragraph 1.`)) && app;
+  });
   try {
     await Zotero.uiReadyPromise; check(Zotero.version==='10.0.8', 'Requires Zotero 10.0.8');
     const {AddonManager}=ChromeUtils.importESModule('resource://gre/modules/AddonManager.sys.mjs');
@@ -26,15 +39,51 @@
     reader=await Zotero.Reader.open(item.id); await reader._initPromise; host=reader._iframe.parentElement;
     toolbar=await until('source toolbar',()=>reader._iframeWindow.document.querySelector('#anywhere-plamo-toolbar'));
     check(toolbar.textContent==='訳','wrong source button'); toolbar.click(); await note('clicked 訳');
-    const preview=await translated(1,'Translated page 1 paragraph 1.');
-    check((await text(preview,2)).includes('Original page 2 paragraph 1.'),'preview missing source fallback');
+    await IOUtils.writeUTF8('/sandbox/release-page-1','yes');
+    const preview=await progressive(1);
+    check((await text(preview,2)).includes('Original page 2 paragraph 1.'),'missing source fallback');
     const left = pdf(reader._internalReader), sourceRect=reader._iframe.getBoundingClientRect(), paneRect=right().getBoundingClientRect();
     check(right().contentDocument.documentURI==='resource://zotero/reader/reader.html' && left!==preview,'not separate official reader documents');
     check(paneRect.width>0 && sourceRect.width>0 && paneRect.x>=sourceRect.right-1,'not side-by-side');
     check(Math.abs(paneRect.top-sourceRect.top)<=1,'reader top edges are misaligned');
     await note('aligned tops',{sourceTop:sourceRect.top,translationTop:paneRect.top});
-    await note('progressive official reader',{page1:(await text(preview,1)).slice(0,32),page2:(await text(preview,2)).slice(0,32),leftWidth:sourceRect.width,rightX:paneRect.x,rightWidth:paneRect.width});
+    await note('first progressive page',{leftWidth:sourceRect.width,rightX:paneRect.x,rightWidth:paneRect.width});
+    const browser=right(), outer=browser.contentDocument, frame=outer.querySelector('#primary-view iframe');
+    const content=frame.contentDocument, v=preview.pdfViewer, scroller=v.container;
+    const z=v.currentScale;
+    outer.getElementById('zoomIn').click(); await until('progressive toolbar zoom',()=>v.currentScale>z);
+    // Straddle the page boundary so the unchanged page and the incoming page
+    // are both painted. Use a non-default zoom and scroll before publication.
+    const page=i=>v.getPageView(i).div;
+    scroller.scrollTop+=page(1).getBoundingClientRect().top-scroller.getBoundingClientRect().top-scroller.clientHeight/2;
+    await until('both pages rendered',()=>[0,1].every(i=>v.getPageView(i).renderingState===3));
+    await sleep(600);
+    const stable=page(0), paint=stable.querySelector('canvas'), scroll=scroller.scrollTop, scale=v.currentScale;
+    const visible=stable.getBoundingClientRect().bottom-scroller.getBoundingClientRect().top;
+    check(scroll>0 && visible>50 && visible<scroller.clientHeight-50,'pages do not straddle viewport');
+    check(paint && paint.width>0,'unchanged page has no rendered canvas');
+    // Capture the rendered viewport, not just the source PDF's backing canvas:
+    // both overlay paint and native page-proxy paint must change the second page.
+    const sample = i => {
+      const bounds=page(i).getBoundingClientRect(), viewport=scroller.getBoundingClientRect();
+      const x=Math.ceil(Math.max(bounds.left,viewport.left)+4), y=Math.ceil(Math.max(bounds.top,viewport.top)+4);
+      const w=Math.floor(Math.min(bounds.right,viewport.right)-x-16), h=Math.floor(Math.min(bounds.bottom,viewport.bottom)-y-4);
+      check(w>0 && h>0,'page crop not visible');
+      const target=host.ownerDocument.createElementNS('http://www.w3.org/1999/xhtml','canvas');
+      target.width=w; target.height=h;
+      target.getContext('2d').drawWindow(frame.contentWindow,x,y,w,h,'white');
+      return target.toDataURL();
+    };
+    const pixels=sample(0), originalPage2=sample(1);
+    await IOUtils.writeUTF8('/sandbox/release-page-2','yes');
+    await progressive(2);
+    await until('page two pixels changed',()=>sample(1)!==originalPage2);
+    check(right()===browser && right().contentDocument===outer && frame===outer.querySelector('#primary-view iframe') && frame.contentDocument===content,'reader iframe or document replaced');
+    check(pdf(internal()).pdfViewer.getPageView(0).div===stable && stable.querySelector('canvas')===paint && sample(0)===pixels,'visible unchanged page or pixels replaced');
+    check(v.currentScale===scale && Math.abs(scroll-scroller.scrollTop)<=1,'progressive update changed zoom or scroll');
+    await note('second progressive page',{stablePage:1,updatedPage:2,stableVisiblePixels:visible,scrollBefore:scroll,scrollAfter:scroller.scrollTop,scaleBefore:scale,scaleAfter:v.currentScale});
     await IOUtils.writeUTF8('/sandbox/finish-job','yes');
+    await until('final reader ready',()=>host.querySelector('[role=status]')?.textContent.includes('翻訳完了'));
     const app=await translated(2,'Translated page 2 paragraph 1.'); const view=app.pdfViewer;
     check((await text(left,2)).includes('Original page 2 paragraph 1.'),'source changed');
     const doc=right().contentDocument;

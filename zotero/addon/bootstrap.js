@@ -38,11 +38,10 @@ async function request(s, path, method, kind, body) {
     if (method === 'POST') Object.assign(headers, { 'Content-Type': 'application/pdf', 'X-Target': 'ja', 'X-Request-ID': s.requestID });
     const response = await fetch(ORIGIN + path, { method, headers, body, signal: controller.signal,
       credentials: 'omit', redirect: 'error', cache: 'no-store' });
-    if (kind === 'snapshot' && [202, 404, 409, 425].includes(response.status)) return null;
+    if (kind === 'page' && [202, 404, 409, 425].includes(response.status)) return null;
     if (method === 'DELETE' && response.status === 404) return;
-    if (kind === 'snapshot' && response.status === 413) {
-      s.skipPreview = true;
-      s.status.textContent = '途中プレビューが大きいため、表示更新を省略します。翻訳は続行中です。';
+    if (kind === 'page' && response.status === 413) {
+      (s.oversizePages ??= new Set()).add(path);
       return null;
     }
     if (kind === 'pdf' && response.status === 413) {
@@ -52,7 +51,7 @@ async function request(s, path, method, kind, body) {
       return null;
     }
     if (!response.ok) throw Object.assign(new Error(message(response.status, kind)), { transient: [408, 429, 500, 502, 503, 504].includes(response.status) });
-    if (kind === 'snapshot' || kind === 'pdf') {
+    if (kind === 'page' || kind === 'pdf') {
       if (response.headers.get('Content-Type')?.split(';')[0].trim() !== 'application/pdf') throw new Error('PDF を取得できません。サービスのバージョンを確認してください。');
       return new Uint8Array(await response.arrayBuffer());
     }
@@ -115,16 +114,17 @@ async function refresh(s) {
     throw new Error(`翻訳に失敗しました。翻訳エンジンの設定を確認して再試行してください。${detail ? ' 詳細: ' + detail : ''}`);
   }
   if (!['running', 'done'].includes(status.state) || !Number.isInteger(status.pages) || status.pages < 0) throw new Error('ジョブ状態を読み取れません。サービスのバージョンを確認してください。');
-  const final = status.state === 'done';
-  if (!final && (s.skipPreview || status.pages === s.shown)) return;
-  if (!final && !status.pages) { s.status.textContent = '最初の翻訳ページを待っています…'; return; }
-  const bytes = await request(s, `${s.path}/${final ? 'document' : 'preview'}.pdf`, 'GET', final ? 'pdf' : 'snapshot');
+  if (status.state !== 'done') {
+    await updateReadyPages(s, status.pages);
+    if (!s.closed) s.status.textContent = status.pages ? `${status.pages} ページ翻訳済み · 未翻訳ページは原文です。注釈は完了後に使えます。` : '最初の翻訳ページを待っています…';
+    return;
+  }
+  const bytes = await request(s, `${s.path}/document.pdf`, 'GET', 'pdf');
   if (!bytes || s.closed) return;
-  await displayPDF(s, bytes, final, status.layoutDigest);
+  await displayPDF(s, bytes, true, status.layoutDigest);
   if (s.closed) return;
-  s.done = final;
-  s.shown = status.pages;
-  s.status.textContent = final ? '翻訳完了 · 訳文に注釈を付けられます。' : `${status.pages} ページ翻訳済み · 未翻訳ページは原文です。注釈は完了後に使えます。`;
+  s.done = true;
+  s.status.textContent = '翻訳完了 · 訳文に注釈を付けられます。';
 }
 
 function tick(s) {
@@ -172,6 +172,8 @@ async function start(s) {
   s.path = '/jobs/' + result.id;
   // Closing mid-upload must not strand the job after the POST completes.
   if (s.closed) { await release(s); return; }
+  await displayPDF(s, new Uint8Array(bytes), false);
+  if (s.closed) return;
   s.timer = setInterval(() => tick(s), 250);
   tick(s);
 }

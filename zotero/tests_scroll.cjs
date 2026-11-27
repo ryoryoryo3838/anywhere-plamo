@@ -56,28 +56,64 @@ test('polls by completion count, switches to final even when page count is uncha
   const states = [{ state: 'running', pages: 1 }, { state: 'running', pages: 1 }, { state: 'done', pages: 1, layoutDigest: 'a'.repeat(64) }];
   ctx.request = async (s, path, method, kind) => { requests.push(path); return kind === 'json' ? states.shift() : new Uint8Array(1); };
   ctx.displayPDF = async (s, bytes, final, identity) => stages.push([final, identity]);
+  const prefixes = [];
+  ctx.updateReadyPages = async (_s, ready) => prefixes.push(ready);
   const s = { path: '/jobs/abc', status: {} };
   for (let i = 0; i < 3; i++) await ctx.refresh(s);
-  assert.deepEqual(requests.filter(x => x.endsWith('.pdf')), ['/jobs/abc/preview.pdf', '/jobs/abc/document.pdf']);
-  assert.deepEqual(stages, [[false, undefined], [true, 'a'.repeat(64)]]);
+  assert.deepEqual(requests.filter(x => x.endsWith('.pdf')), ['/jobs/abc/document.pdf']);
+  assert.deepEqual(prefixes, [1, 1]);
+  assert.deepEqual(stages, [[true, 'a'.repeat(64)]]);
   assert.equal(s.done, true);
 });
 
-test('an oversized preview does not cancel translation or block the final document', async () => {
-  let polls = 0;
+test('oversized page is skipped individually; oversized final uses save-final', async () => {
   const paths = [];
   const ctx = context({setTimeout, clearTimeout, fetch: async url => {
     paths.push(url);
-    if (url.endsWith('preview.pdf')) return {status: 413};
-    if (url.endsWith('document.pdf')) return {ok: true, headers: {get: () => 'application/pdf'}, arrayBuffer: async () => new ArrayBuffer(1)};
-    return {ok: true, json: async () => ({state: ++polls === 3 ? 'done' : 'running', pages: polls})};
+    if (url.endsWith('.pdf')) return {status: 413};
+    if (url.endsWith('/save-final')) return {ok: true, json: async () => ({path: '/saved/translation.pdf'})};
+    return {ok: true, json: async () => ({state: 'done', pages: 2})};
   }});
   const s = {win: {AbortController}, path: '/jobs/example', status: {}};
-  ctx.displayPDF = async (_, bytes, final) => assert.ok(final && bytes.byteLength === 1);
-  await ctx.refresh(s); assert.equal(s.skipPreview, true);
-  await ctx.refresh(s); await ctx.refresh(s);
-  assert.equal(paths.filter(url => url.endsWith('preview.pdf')).length, 1);
+  const path = s.path + '/pages/1.pdf';
+  assert.equal(await ctx.request(s, path, 'GET', 'page'), null);
+  assert.deepEqual([...s.oversizePages], [path]);
+  await ctx.refresh(s);
+  assert.match(s.status.textContent, /\/saved\/translation.pdf/);
   assert.equal(s.done, true);
+});
+
+test('visible ready pages are installed individually, reused, evicted and revisited', async () => {
+  const ctx = context({ Components: { utils: { cloneInto: x => x, waiveXrays: x => x } } });
+  const fetched = [], released = [], pv = new Map();
+  const viewer = pdf(1000, 0, 0), originalView = viewer.getPageView;
+  viewer.pagesCount = 100;
+  viewer.getPageView = i => {
+    if (!pv.has(i)) pv.set(i, { ...originalView(i), setPdfPage(page) { this.pdfPage = page; } });
+    return pv.get(i);
+  };
+  viewer._getVisiblePages = () => ({ views: [{ id: viewer.container.scrollTop / 1000 + 1 }] });
+  viewer.update = () => {};
+  const s = { path: '/jobs/x', right: reader(viewer) }, view = s.right._primaryView, frame = view._iframeWindow;
+  view._pdfPages = {}; view._handlePageDestroy = () => {};
+  frame.PDFViewerApplication.pdfDocument = { getPage: n => 'original ' + n };
+  frame.PDFViewerApplicationOptions = { get: () => '' };
+  frame.pdfjsLib = { getDocument: ({ data }) => ({ promise: Promise.resolve({ numPages: 1,
+    getPage: () => 'translated ' + data, getPageData: () => 'glyphs ' + data,
+    getOptionalContentConfig: () => null }), destroy: async () => { released.push(data); } }) };
+  ctx.request = async (_s, path) => { fetched.push(path); return Number(path.match(/(\d+)\.pdf$/)[1]); };
+  await ctx.updateReadyPages(s, 1); await ctx.updateReadyPages(s, 1);
+  assert.deepEqual(fetched, ['/jobs/x/pages/1.pdf']);
+  assert.equal(viewer.getPageView(0).pdfPage, 'translated 1');
+  viewer.container.scrollTop = 50000;
+  await ctx.updateReadyPages(s, 80);
+  assert.deepEqual([...s.pageDocuments.keys()], [50, 51, 49]);
+  assert.equal(viewer.getPageView(0).pdfPage, 'original 1');
+  assert.deepEqual(released, [1]);
+  viewer.container.scrollTop = 0;
+  await ctx.updateReadyPages(s, 80);
+  assert.equal(view._pdfPages[0], 'glyphs 1');
+  assert.deepEqual([...s.pageDocuments.keys()], [0, 1]);
 });
 
 test('reload uses immediate right-side location; only final opens the private annotation store', async () => {
@@ -90,11 +126,11 @@ test('reload uses immediate right-side location; only final opens the private an
   const events = [];
   Object.assign(s.right, { reload() { events.push('reload'); }, setAnnotations(x) { events.push(x[0].id); }, setReadOnly(x) { events.push(x); } });
   const bytes = new Uint8Array([22, 33]);
-  await ctx.displayPDF(s, bytes, false);
+  await assert.rejects(ctx.displayPDF(s, bytes, false));
   assert.equal(calls.length, 0);
-  assert.deepEqual(s.right._state.primaryViewState, { pageIndex: 1, scale: 170, top: 460, left: 13, scrollMode: 0, spreadMode: 0 });
   await ctx.displayPDF(s, bytes, true, 'a'.repeat(64));
-  assert.deepEqual(events, ['reload', 'reload', 'existing', false]);
+  assert.deepEqual(s.right._state.primaryViewState, { pageIndex: 1, scale: 170, top: 460, left: 13, scrollMode: 0, spreadMode: 0 });
+  assert.deepEqual(events, ['reload', 'existing', false]);
   assert.deepEqual(calls[0], [s.item, 'ja', s.digest, 'a'.repeat(64)]);
   await ctx.displayPDF(s, bytes, true, 'bad');
   assert.equal(calls[1][3], require('node:crypto').createHash('sha256').update(bytes).digest('hex'));
