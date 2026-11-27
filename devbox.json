@@ -1,0 +1,75 @@
+{
+  "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/0.18.4/.schema/devbox.schema.json",
+  "packages": {
+    "nodejs_24":  "latest",
+    "python313":  "latest",
+    "rustc":      "latest",
+    "cargo":      "latest",
+    "cmake":      "latest",
+    "pkg-config": "latest",
+    "gcc":        "latest",
+    "webkitgtk_4_1": {
+      "version": "latest",
+      "outputs": ["out", "dev"]
+    },
+    "libayatana-appindicator": {
+      "version": "latest",
+      "outputs": ["out", "dev"]
+    },
+    "librsvg": {
+      "version": "latest",
+      "outputs": ["out", "dev"]
+    },
+    "xdotool": "latest",
+    "openssl": {
+      "version": "latest",
+      "outputs": ["out", "dev"]
+    },
+    "gtk3": {
+      "version": "latest",
+      "outputs": ["out", "dev"]
+    },
+    "libsoup_3": {
+      "version": "latest",
+      "outputs": ["out", "dev"]
+    },
+    "glib-networking": "latest",
+    "glib": {
+      "version": "latest",
+      "outputs": ["out", "dev"]
+    },
+    "cairo": {
+      "version": "latest",
+      "outputs": ["out", "dev"]
+    },
+    "pango": {
+      "version": "latest",
+      "outputs": ["out", "dev"]
+    },
+    "gdk-pixbuf": {
+      "version": "latest",
+      "outputs": ["out", "dev"]
+    },
+    "atk": {
+      "version": "latest",
+      "outputs": ["out", "dev"]
+    },
+    "harfbuzz": {
+      "version": "latest",
+      "outputs": ["out", "dev"]
+    },
+    "zlib": {
+      "version": "latest",
+      "outputs": ["out", "dev"]
+    }
+  },
+  "shell": {
+    "scripts": {
+      "start": "ANYWHERE_PLAMO_BABELDOC_PYTHON=\"${ANYWHERE_PLAMO_BABELDOC_PYTHON:-$HOME/.local/share/anywhere-plamo-babeldoc/bin/python}\" npm run tauri -- dev --no-watch"
+    },
+    "init_hook": [
+      "# Tray icons dlopen appindicator at runtime; expose only its own lib dir so nix libs don't shadow the system glibc.",
+      "export LD_LIBRARY_PATH=\"$(dirname \"$(readlink -f \"$DEVBOX_PROJECT_ROOT/.devbox/nix/profile/default/lib/libayatana-appindicator3.so.1\")\")${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\""
+    ]
+  }
+}
