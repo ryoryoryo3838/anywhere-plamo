@@ -1,0 +1,14 @@
+{
+  "manifest_version": 2,
+  "name": "Anywhere PLaMo 翻訳ビュー",
+  "version": "0.1.0",
+  "description": "PDF の日本語訳を、Zotero リーダーの原文と並べて表示します。",
+  "applications": {
+    "zotero": {
+      "id": "anywhere-plamo@local.zotero",
+      "update_url": "https://updates.anywhere-plamo.invalid/zotero.json",
+      "strict_min_version": "10.0",
+      "strict_max_version": "10.*"
+    }
+  }
+}
