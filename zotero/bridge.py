@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Opt-in loopback PDF translation bridge. Run with the BabelDOC Python environment."""
 import argparse
+import hashlib
 import importlib.util
 import contextlib
 from dataclasses import dataclass
@@ -196,6 +197,8 @@ class Job:
     pages: int = 0
     preview_worker: subprocess.Popen | None = None
     preview_pages: int = 0
+    request_id: str | None = None
+    payload_hash: bytes | None = None
 
     def pdf_path(self, kind, status):
         if status['state'] == 'failed':
@@ -346,7 +349,24 @@ class Handler(BaseHTTPRequestHandler):
         size = int(lengths[0])
         if not 0 < size <= MAX_BODY:
             return self.reply(413, {'error': 'PDF size outside allowed range.'})
+        keys = self.headers.get_all('X-Request-ID', [])
+        if keys and (len(keys) != 1 or not re.fullmatch('[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', keys[0])):
+            return self.reply(400, {'error': 'Invalid request ID.'})
+        key = keys[0] if keys else None
+        digest = hashlib.sha256()
         jobs = self.bridge.jobs
+        existing = next(((id_, j) for id_, j in jobs.items() if key and j.request_id == key), None)
+        if existing:
+            while size:
+                chunk = self.rfile.read(min(size, 65536))
+                if not chunk:
+                    return self.reply(400, {'error': 'Incomplete upload.'})
+                size -= len(chunk)
+                digest.update(chunk)
+            id_, job = existing
+            if digest.digest() != job.payload_hash:
+                return self.reply(409, {'error': 'Request ID already used for another PDF.'})
+            return self.reply(202, {'id': id_})
         if len(jobs) >= MAX_JOBS or any(j.worker.poll() is None for j in jobs.values()):
             return self.reply(429, {'error': 'Bridge busy. Wait or release an earlier job.'})
         id_ = secrets.token_hex(16)
@@ -358,13 +378,14 @@ class Handler(BaseHTTPRequestHandler):
                     chunk = self.rfile.read(min(size, 65536))
                     if not chunk:
                         return self.reply(400, {'error': 'Incomplete upload.'})
+                    digest.update(chunk)
                     output.write(chunk)
                     size -= len(chunk)
             selection.yield_idle_selection(self.bridge)
             process = subprocess.Popen([sys.executable, '-I', Path(__file__).resolve(), '--worker', directory],
                                        cwd=directory, start_new_session=True, stdin=subprocess.DEVNULL,
                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            jobs[id_] = Job(directory, process, time.monotonic())
+            jobs[id_] = Job(directory, process, time.monotonic(), request_id=key, payload_hash=digest.digest())
         finally:
             if id_ not in jobs:
                 shutil.rmtree(directory)
@@ -374,6 +395,25 @@ class Handler(BaseHTTPRequestHandler):
         match = re.fullmatch(r'/jobs/([0-9a-f]{32})/(document|preview)\.pdf', self.path)
         if match:
             return self.send_pdf(match[1], match[2])
+        export = re.fullmatch(r'/jobs/([0-9a-f]{32})/save-final', self.path)
+        if export:
+            with self.bridge.lock:
+                job = self.bridge.jobs.get(export[1])
+                if not job or job.status()['state'] != 'done':
+                    return self.reply(404, {'error': 'Completed job not found.'})
+                source = job.directory / 'output.pdf'
+                dest = Path.home() / '.local/share/anywhere-plamo-babeldoc/finished'
+                dest.mkdir(parents=True, mode=0o700, exist_ok=True)
+                target = dest / (export[1] + '.pdf')
+                if not target.exists():
+                    with tempfile.NamedTemporaryFile(dir=dest, delete=False) as tmp:
+                        stage = Path(tmp.name)
+                    try:
+                        shutil.copyfile(source, stage)
+                        stage.replace(target)
+                    finally:
+                        stage.unlink(missing_ok=True)
+                return self.reply(200, {'path': str(target)})
         with self.bridge.lock:
             self.send_status_or_png()
 

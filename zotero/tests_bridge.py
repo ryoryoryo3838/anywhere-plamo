@@ -79,6 +79,31 @@ class BridgeTests(unittest.TestCase):
         with patch.object(bridge, 'MAX_JOBS', 0):
             self.assertEqual(self.upload(b'x')[0], 429)
 
+    def test_submission_retries(self):
+        key = {'X-Request-ID': 'a1234567-1234-4567-89ab-123456789abc'}
+        with patch.object(bridge.subprocess, 'Popen') as spawn:
+            spawn.return_value.poll.return_value = None
+            with ThreadPoolExecutor(2) as pool:
+                replies = list(pool.map(lambda _: self.upload(b'first', **key), range(2)))
+            self.assertEqual(replies[0][0], 202)
+            self.assertEqual(replies[0], replies[1])
+            route = '/jobs/' + replies[0][1]['id']
+            self.assertEqual(self.upload(b'other', **key)[0], 409)
+            self.assertEqual(self.upload(b'first', Authorization='', **key)[0], 401)
+            self.assertEqual(self.upload(b'first', **{'X-Request-ID': 'not-a-uuid'})[0], 400)
+            self.assertEqual((self.work / replies[0][1]['id'] / 'input.pdf').read_bytes(), b'first')
+            spawn.assert_called_once()
+            spawn.return_value.poll.return_value = 0
+            with patch.object(bridge, 'MAX_JOBS', 1):
+                self.assertEqual(self.upload(b'first', **key), replies[0])
+            self.assertEqual(self.request('DELETE', route)[0], 200)
+            code, new = self.upload(b'other', **key)
+            self.assertEqual(code, 202)
+            self.assertNotEqual(new, replies[0][1])
+            with patch.object(bridge, 'LIFETIME', 0):
+                self.server.service_actions()
+            self.assertEqual(self.upload(b'third', **key)[0], 202)
+
     def test_bad_pdf_and_release(self):
         code, job = self.upload(b'not a PDF')
         self.assertEqual(code, 202)
@@ -165,6 +190,10 @@ class BridgeTests(unittest.TestCase):
                 self.assertEqual(self.request('GET', path)[0], 200)  # Final file uses its own limit.
             with patch.object(bridge, 'MAX_FINAL', 100):
                 self.assertEqual(self.request('GET', path)[0], 413)
+        with patch.object(bridge.Path, 'home', return_value=self.work):
+            code, saved = self.request('GET', route + '/save-final')
+            self.assertEqual(code, 200)
+            self.assertEqual(bridge.Path(saved['path']).read_bytes(), (root / 'output.pdf').read_bytes())
         # Hold a download mid-transfer; status and release must still work,
         # and unlinking the job must not truncate the already-open download.
         entered, resume = threading.Event(), threading.Event()

@@ -35,7 +35,7 @@ async function request(s, path, method, kind, body) {
   if (method === 'GET') s.controller = controller;
   try {
     const headers = { Authorization: 'Bearer ' + s.token };
-    if (method === 'POST') Object.assign(headers, { 'Content-Type': 'application/pdf', 'X-Target': 'ja' });
+    if (method === 'POST') Object.assign(headers, { 'Content-Type': 'application/pdf', 'X-Target': 'ja', 'X-Request-ID': s.requestID });
     const response = await fetch(ORIGIN + path, { method, headers, body, signal: controller.signal,
       credentials: 'omit', redirect: 'error', cache: 'no-store' });
     if (kind === 'snapshot' && [202, 404, 409, 425].includes(response.status)) return null;
@@ -45,7 +45,13 @@ async function request(s, path, method, kind, body) {
       s.status.textContent = '途中プレビューが大きいため、表示更新を省略します。翻訳は続行中です。';
       return null;
     }
-    if (!response.ok) throw new Error(message(response.status, kind));
+    if (kind === 'pdf' && response.status === 413) {
+      const saved = await request(s, s.path + '/save-final', 'GET', 'json');
+      s.status.textContent = '翻訳完了 · 表示上限を超えたため、完成PDFを保存しました：' + saved.path;
+      s.done = true;
+      return null;
+    }
+    if (!response.ok) throw Object.assign(new Error(message(response.status, kind)), { transient: [408, 429, 500, 502, 503, 504].includes(response.status) });
     if (kind === 'snapshot' || kind === 'pdf') {
       if (response.headers.get('Content-Type')?.split(';')[0].trim() !== 'application/pdf') throw new Error('PDF を取得できません。サービスのバージョンを確認してください。');
       return new Uint8Array(await response.arrayBuffer());
@@ -53,7 +59,7 @@ async function request(s, path, method, kind, body) {
     if (kind === 'json') return await response.json();
   } catch (e) {
     if (e.name === 'TypeError' || e.name === 'NetworkError' || e.name === 'AbortError') {
-      throw new Error('ローカル翻訳サービスに接続できません。サービスを起動し、ポート 17843 を確認して再試行してください。');
+      throw Object.assign(new Error('ローカル翻訳サービスへの接続が途切れました。'), { transient: true });
     }
     if (e.name === 'SyntaxError') throw new Error('サービスの応答を読み取れません。サービスのバージョンを確認してください。');
     throw e;
@@ -128,7 +134,13 @@ function tick(s) {
   if (s.busy || s.done || !s.path || Date.now() < s.nextStatus) return;
   s.busy = true;
   s.nextStatus = Date.now() + 1200;
-  track(refresh(s).catch(e => fail(s, e)).finally(() => { s.busy = false; }));
+  track(refresh(s).then(() => { s.delay = 0; }).catch(e => {
+    if (!s.closed && e.transient) {
+      s.delay = Math.min(15000, (s.delay || 750) * 2);
+      s.nextStatus = Date.now() + s.delay;
+      s.status.textContent = '自動で再接続しています。翻訳は最初からやり直しません。';
+    } else if (!s.closed) fail(s, e);
+  }).finally(() => { s.busy = false; }));
 }
 
 async function start(s) {
@@ -145,7 +157,17 @@ async function start(s) {
   const bytes = await file.arrayBuffer();
   s.digest = await pdfDigest(s.win, bytes);
   if (s.closed) return;
-  const result = await request(s, '/jobs', 'POST', 'json', bytes);
+  s.requestID = s.win.crypto.randomUUID();
+  let result;
+  for (let delay = 1000; !s.closed; delay = Math.min(15000, delay * 2)) {
+    try { result = await request(s, '/jobs', 'POST', 'json', bytes); break; }
+    catch (e) {
+      if (!e.transient) throw e;
+      s.status.textContent = '翻訳サービスに自動で再接続しています…';
+      await Zotero.Promise.delay(delay);
+    }
+  }
+  if (!result && s.closed) return;
   if (typeof result?.id !== 'string' || !/^[A-Za-z0-9_-]+$/.test(result.id)) throw new Error('ジョブ ID を読み取れません。サービスのバージョンを確認してください。');
   s.path = '/jobs/' + result.id;
   // Closing mid-upload must not strand the job after the POST completes.

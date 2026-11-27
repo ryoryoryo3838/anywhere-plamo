@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Anywhere PLaMo 翻訳ビュー",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "PDF の日本語訳を、Zotero リーダーの原文と並べて表示します。",
   "applications": {
     "zotero": {
