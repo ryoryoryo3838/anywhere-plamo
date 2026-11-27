@@ -160,20 +160,20 @@ function open(reader, readerDoc) {
   const pane = el('aside');
   pane.setAttribute('aria-label', '日本語訳');
   pane.style.cssText = 'display:flex;flex-flow:column nowrap;flex:0 1 47%;width:47%;min-width:0;min-height:0;overflow:hidden;border-inline-start:1px solid GrayText;background:Canvas;color:CanvasText';
-  const bar = el('header');
-  bar.style.cssText = 'display:flex;align-items:center;flex-wrap:wrap;gap:.5em;padding:.5em';
+  const bar = el('footer');
+  bar.style.cssText = 'display:flex;align-items:center;gap:.5em;flex:none;min-width:0;padding:.2em .5em;border-block-start:1px solid GrayText;font-size:.9em';
   const title = el('strong', '日本語訳');
   const retry = el('button', '再試行');
   retry.hidden = true;
   const stop = el('button', '閉じる');
   stop.title = '訳文を閉じて、翻訳ジョブを終了します';
-  bar.append(title, retry, stop);
   const status = el('div', 'PDF をローカルサービスに送信しています…');
-  status.style.cssText = 'padding:0 .5em .5em;overflow-wrap:anywhere';
+  status.style.cssText = 'flex:1;min-width:0;overflow-wrap:anywhere';
   status.className = 'anywhere-plamo-status';
   status.setAttribute('role', 'status');
   const browser = nativeReaderBrowser(doc);
-  pane.append(bar, status, browser);
+  bar.append(title, status, retry, stop);
+  pane.append(browser, bar);
   reader._iframe.after(pane);
   const s = { reader, readerDoc, pane, browser, win: doc.defaultView, retry, status, nextStatus: 0, scrollGeneration: 0 };
   s.onScroll = () => {
