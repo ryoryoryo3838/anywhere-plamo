@@ -85,6 +85,7 @@ function close(s) {
   s.closed = true;
   sessions.delete(s.reader.tabID);
   clearInterval(s.timer);
+  stopScrollSync(s);
   s.controller?.abort();
   s.readerDoc.defaultView?.removeEventListener('unload', s.onUnload);
   clearImage(s);
@@ -100,9 +101,45 @@ function pageNumber(s) {
   return Number.isInteger(stats?.pageIndex) ? stats.pageIndex + 1 : null;
 }
 
+function syncScroll(s) {
+  if (!s.sourcePage || s.closed || s.failed || s.shown !== s.wanted || !s.image.complete || !s.image.naturalWidth) return;
+  const rect = s.sourcePage.getBoundingClientRect();
+  const range = rect.height - s.source.clientHeight;
+  const top = s.source.getBoundingClientRect().top + s.source.clientTop - rect.top;
+  // Map available travel, so the first and last lines coincide at each end
+  // even when the panes have different widths and header heights.
+  const fraction = range > 0 ? Math.min(1, Math.max(0, top / range)) : 0;
+  s.scroll.scrollTop = fraction * (s.scroll.scrollHeight - s.scroll.clientHeight);
+}
+
+function bindScrollSource(s, page) {
+  const view = s.reader._internalReader?._state?.primary ? '#primary-view' : '#secondary-view';
+  const doc = s.readerDoc.querySelector(`${view} iframe`)?.contentDocument;
+  const source = doc?.getElementById('viewerContainer');
+  const sourcePage = page && source?.querySelector(`.page[data-page-number="${page}"]`);
+  if (source === s.source && sourcePage === s.sourcePage) return;
+  s.source?.removeEventListener('scroll', s.onScroll);
+  s.resize.disconnect();
+  s.source = source;
+  s.sourcePage = sourcePage;
+  source?.addEventListener('scroll', s.onScroll, { passive: true });
+  if (source) s.resize.observe(source);
+  if (sourcePage) s.resize.observe(sourcePage);
+  s.resize.observe(s.scroll);
+  s.resize.observe(s.image);
+}
+
+function stopScrollSync(s) {
+  s.source?.removeEventListener('scroll', s.onScroll);
+  s.resize.disconnect();
+  s.image.removeEventListener('load', s.onImageLoad);
+  if (s.frame != null) s.win.cancelAnimationFrame(s.frame);
+}
+
 function fail(s, error) {
   if (s.closed) return;
   s.failed = true;
+  stopScrollSync(s);
   clearInterval(s.timer);
   clearImage(s);
   s.status.textContent = error.message;
@@ -143,7 +180,6 @@ async function refresh(s, page) {
   s.image.src = s.url;
   s.shown = page;
   s.image.hidden = false;
-  s.scroll.scrollTop = 0;
   s.status.textContent = `${page} ページ目の日本語訳`;
 }
 
@@ -151,6 +187,7 @@ function tick(s) {
   if (s.closed || s.failed) return;
   if (!s.pane.isConnected) { close(s); return; }
   const page = pageNumber(s);
+  bindScrollSource(s, page);
   if (page !== s.wanted) {
     clearImage(s);
     s.wanted = page;
@@ -206,11 +243,22 @@ function open(reader, readerDoc) {
   scroll.style.cssText = 'flex:1;min-height:0;overflow:auto';
   const image = el('img');
   image.hidden = true;
-  image.style.cssText = 'width:100%;height:auto';
+  image.style.cssText = 'width:100%;height:auto;vertical-align:top';
   scroll.append(image);
   pane.append(bar, status, scroll);
   reader._iframe.after(pane);
   const s = { reader, readerDoc, pane, win: doc.defaultView, retry, status, image, scroll, nextStatus: 0 };
+  s.onScroll = () => {
+    if (s.frame != null || s.closed || s.failed) return;
+    s.frame = s.win.requestAnimationFrame(() => {
+      s.frame = null;
+      tick(s); // Also switch the preview when the scroll crosses a page boundary.
+      syncScroll(s);
+    });
+  };
+  s.resize = new s.win.ResizeObserver(s.onScroll);
+  s.onImageLoad = () => syncScroll(s);
+  image.addEventListener('load', s.onImageLoad);
   sessions.set(reader.tabID, s);
   const restart = () => { close(s); open(reader, readerDoc); };
   retry.addEventListener('click', restart);
