@@ -38,12 +38,12 @@ async function request(s, path, method, kind, body) {
     if (method === 'POST') Object.assign(headers, { 'Content-Type': 'application/pdf', 'X-Target': 'ja' });
     const response = await fetch(ORIGIN + path, { method, headers, body, signal: controller.signal,
       credentials: 'omit', redirect: 'error', cache: 'no-store' });
-    if (kind === 'image' && [202, 404, 409, 425].includes(response.status)) return null;
+    if (kind === 'snapshot' && [202, 404, 409, 425].includes(response.status)) return null;
     if (method === 'DELETE' && response.status === 404) return;
     if (!response.ok) throw new Error(message(response.status));
-    if (kind === 'image') {
-      if (response.headers.get('Content-Type')?.split(';')[0].trim() !== 'image/png') throw new Error('ページが PNG ではありません。サービスのバージョンを確認してください。');
-      return new s.win.Blob([await response.arrayBuffer()], { type: 'image/png' });
+    if (kind === 'snapshot' || kind === 'pdf') {
+      if (response.headers.get('Content-Type')?.split(';')[0].trim() !== 'application/pdf') throw new Error('PDF を取得できません。サービスのバージョンを確認してください。');
+      return new Uint8Array(await response.arrayBuffer());
     }
     if (kind === 'json') return await response.json();
   } catch (e) {
@@ -68,14 +68,6 @@ function release(s) {
   }));
 }
 
-function clearImage(s) {
-  s.image.removeAttribute('src');
-  s.image.hidden = true;
-  if (s.url) s.win.URL.revokeObjectURL(s.url);
-  s.url = null;
-  s.shown = null;
-}
-
 function markButton(s, open) {
   s.readerDoc.getElementById(BUTTON)?.setAttribute('aria-pressed', String(open));
 }
@@ -88,52 +80,10 @@ function close(s) {
   stopScrollSync(s);
   s.controller?.abort();
   s.readerDoc.defaultView?.removeEventListener('unload', s.onUnload);
-  clearImage(s);
+  closeNative(s);
   markButton(s, false);
   s.pane.remove();
   release(s);
-}
-
-function pageNumber(s) {
-  // Same active view and zero-based index as Zotero 10's reader toolbar.
-  const state = s.reader._internalReader?._state;
-  const stats = state?.primary ? state.primaryViewStats : state?.secondaryViewStats;
-  return Number.isInteger(stats?.pageIndex) ? stats.pageIndex + 1 : null;
-}
-
-function syncScroll(s) {
-  if (!s.sourcePage || s.closed || s.failed || s.shown !== s.wanted || !s.image.complete || !s.image.naturalWidth) return;
-  const rect = s.sourcePage.getBoundingClientRect();
-  const range = rect.height - s.source.clientHeight;
-  const top = s.source.getBoundingClientRect().top + s.source.clientTop - rect.top;
-  // Map available travel, so the first and last lines coincide at each end
-  // even when the panes have different widths and header heights.
-  const fraction = range > 0 ? Math.min(1, Math.max(0, top / range)) : 0;
-  s.scroll.scrollTop = fraction * (s.scroll.scrollHeight - s.scroll.clientHeight);
-}
-
-function bindScrollSource(s, page) {
-  const view = s.reader._internalReader?._state?.primary ? '#primary-view' : '#secondary-view';
-  const doc = s.readerDoc.querySelector(`${view} iframe`)?.contentDocument;
-  const source = doc?.getElementById('viewerContainer');
-  const sourcePage = page && source?.querySelector(`.page[data-page-number="${page}"]`);
-  if (source === s.source && sourcePage === s.sourcePage) return;
-  s.source?.removeEventListener('scroll', s.onScroll);
-  s.resize.disconnect();
-  s.source = source;
-  s.sourcePage = sourcePage;
-  source?.addEventListener('scroll', s.onScroll, { passive: true });
-  if (source) s.resize.observe(source);
-  if (sourcePage) s.resize.observe(sourcePage);
-  s.resize.observe(s.scroll);
-  s.resize.observe(s.image);
-}
-
-function stopScrollSync(s) {
-  s.source?.removeEventListener('scroll', s.onScroll);
-  s.resize.disconnect();
-  s.image.removeEventListener('load', s.onImageLoad);
-  if (s.frame != null) s.win.cancelAnimationFrame(s.frame);
 }
 
 function fail(s, error) {
@@ -141,74 +91,56 @@ function fail(s, error) {
   s.failed = true;
   stopScrollSync(s);
   clearInterval(s.timer);
-  clearImage(s);
   s.status.textContent = error.message;
   s.retry.hidden = false;
   release(s);
 }
 
-async function refresh(s, page) {
-  if (!s.done && Date.now() >= s.nextStatus) {
-    const status = await request(s, s.path, 'GET', 'json');
-    if (s.closed) return;
-    if (status.state === 'failed') {
-      const detail = typeof status.error === 'string' ? status.error.replaceAll(s.token, '…').slice(0, 300) : '';
-      throw new Error(`翻訳に失敗しました。翻訳エンジンの設定を確認して再試行してください。${detail ? ' 詳細: ' + detail : ''}`);
-    }
-    if (!['running', 'done'].includes(status.state) || !Number.isInteger(status.pages) || status.pages < 0) throw new Error('ジョブ状態を読み取れません。サービスのバージョンを確認してください。');
-    s.done = status.state === 'done';
-    s.pages = status.pages;
-    s.nextStatus = Date.now() + 1200;
+async function refresh(s) {
+  const status = await request(s, s.path, 'GET', 'json');
+  if (s.closed) return;
+  if (status.state === 'failed') {
+    const detail = typeof status.error === 'string' ? status.error.replaceAll(s.token, '…').slice(0, 300) : '';
+    throw new Error(`翻訳に失敗しました。翻訳エンジンの設定を確認して再試行してください。${detail ? ' 詳細: ' + detail : ''}`);
   }
-  if (page !== pageNumber(s) || page === s.shown || !page) return;
-  if (page > s.pages) {
-    if (s.done) s.status.textContent = `訳文には ${page} ページ目がありません（全 ${s.pages} ページ）。`;
-    return;
-  }
-  if (page === s.lastAttempt && Date.now() < s.nextImage) return;
-  s.lastAttempt = page;
-  s.nextImage = Date.now() + 1000;
-  const blob = await request(s, `${s.path}/pages/${page}.png`, 'GET', 'image');
-  if (s.closed || page !== pageNumber(s)) return;
-  if (!blob) {
-    if (s.done) throw new Error('翻訳済みページを取得できません。再試行してください。');
-    return;
-  }
-  clearImage(s);
-  s.url = s.win.URL.createObjectURL(blob);
-  s.image.alt = `日本語訳 ${page} ページ`;
-  s.image.src = s.url;
-  s.shown = page;
-  s.image.hidden = false;
-  s.status.textContent = `${page} ページ目の日本語訳`;
+  if (!['running', 'done'].includes(status.state) || !Number.isInteger(status.pages) || status.pages < 0) throw new Error('ジョブ状態を読み取れません。サービスのバージョンを確認してください。');
+  const final = status.state === 'done';
+  if (!final && status.pages === s.shown) return;
+  if (!final && !status.pages) { s.status.textContent = '最初の翻訳ページを待っています…'; return; }
+  const bytes = await request(s, `${s.path}/${final ? 'document' : 'preview'}.pdf`, 'GET', final ? 'pdf' : 'snapshot');
+  if (!bytes || s.closed) return;
+  await displayPDF(s, bytes, final, status.layoutDigest);
+  if (s.closed) return;
+  s.done = final;
+  s.shown = status.pages;
+  s.status.textContent = final ? '翻訳完了 · 訳文に注釈を付けられます。' : `${status.pages} ページ翻訳済み · 未翻訳ページは原文です。注釈は完了後に使えます。`;
 }
 
 function tick(s) {
   if (s.closed || s.failed) return;
   if (!s.pane.isConnected) { close(s); return; }
-  const page = pageNumber(s);
-  bindScrollSource(s, page);
-  if (page !== s.wanted) {
-    clearImage(s);
-    s.wanted = page;
-    s.status.textContent = page ? `${page} ページ目の訳文を待っています…` : '原文のページ情報を待っています…';
-  }
-  if (s.busy || !s.path || (s.done && s.shown === page)) return;
+  bindScrollSource(s);
+  if (s.busy || s.done || !s.path || Date.now() < s.nextStatus) return;
   s.busy = true;
-  refresh(s, page).catch(e => fail(s, e)).finally(() => { s.busy = false; });
+  s.nextStatus = Date.now() + 1200;
+  track(refresh(s).catch(e => fail(s, e)).finally(() => { s.busy = false; }));
 }
 
 async function start(s) {
   s.token = await localToken();
   if (s.closed) return;
-  const path = Zotero.Items.get(s.reader.itemID)?.getFilePath();
+  s.item = Zotero.Items.get(s.reader.itemID);
+  const path = s.item?.getFilePath();
   let file;
   try {
     if (!path) throw new Error();
     file = await File.createFromFileName(path);
   } catch (_) { throw new Error('ローカルの PDF が見つかりません。添付ファイルをダウンロードして再試行してください。'); }
   if (s.closed) return;
-  const result = await request(s, '/jobs', 'POST', 'json', file);
+  const bytes = await file.arrayBuffer();
+  s.digest = await pdfDigest(s.win, bytes);
+  if (s.closed) return;
+  const result = await request(s, '/jobs', 'POST', 'json', bytes);
   if (typeof result?.id !== 'string' || !/^[A-Za-z0-9_-]+$/.test(result.id)) throw new Error('ジョブ ID を読み取れません。サービスのバージョンを確認してください。');
   s.path = '/jobs/' + result.id;
   // Closing mid-upload must not strand the job after the POST completes.
@@ -238,32 +170,24 @@ function open(reader, readerDoc) {
   bar.append(title, retry, stop);
   const status = el('div', 'PDF をローカルサービスに送信しています…');
   status.style.cssText = 'padding:0 .5em .5em;overflow-wrap:anywhere';
+  status.className = 'anywhere-plamo-status';
   status.setAttribute('role', 'status');
-  const scroll = el('div');
-  scroll.style.cssText = 'flex:1;min-height:0;overflow:auto';
-  const image = el('img');
-  image.hidden = true;
-  image.style.cssText = 'width:100%;height:auto;vertical-align:top';
-  scroll.append(image);
-  pane.append(bar, status, scroll);
+  const browser = nativeReaderBrowser(doc);
+  pane.append(bar, status, browser);
   reader._iframe.after(pane);
-  const s = { reader, readerDoc, pane, win: doc.defaultView, retry, status, image, scroll, nextStatus: 0 };
+  const s = { reader, readerDoc, pane, browser, win: doc.defaultView, retry, status, nextStatus: 0, scrollGeneration: 0 };
   s.onScroll = () => {
-    if (s.frame != null || s.closed || s.failed) return;
+    ++s.scrollGeneration;
+    if (s.frame != null || s.loading) return;
     s.frame = s.win.requestAnimationFrame(() => {
       s.frame = null;
-      tick(s); // Also switch the preview when the scroll crosses a page boundary.
-      syncScroll(s);
+      if (!s.loading && !s.closed) syncScroll(s);
     });
   };
-  s.resize = new s.win.ResizeObserver(s.onScroll);
-  s.onImageLoad = () => syncScroll(s);
-  image.addEventListener('load', s.onImageLoad);
   sessions.set(reader.tabID, s);
   const restart = () => { close(s); open(reader, readerDoc); };
   retry.addEventListener('click', restart);
   stop.addEventListener('click', () => close(s));
-  image.addEventListener('error', () => { if (s.url) fail(s, new Error('訳文の画像を表示できません。再試行してください。')); });
   s.onUnload = () => close(s);
   readerDoc.defaultView.addEventListener('unload', s.onUnload, { once: true });
   markButton(s, true);
@@ -288,7 +212,12 @@ function toolbar({ reader, doc, append }) {
 
 function install() {}
 function uninstall() {}
-function startup({ id }) {
+let cleanupSelectionTranslation;
+function startup({ id, rootURI }) {
+  for (const script of ['native-annotations.js', 'native-pane.js', 'selection-translation.js']) {
+    Services.scriptloader.loadSubScript(rootURI + script, globalThis);
+  }
+  cleanupSelectionTranslation = registerSelectionTranslation(id, localToken);
   Zotero.Reader.registerEventListener('renderToolbar', toolbar, id);
   // renderToolbar runs only when React mounts its custom section. Also cover
   // already-open tabs when enabling the add-on without restarting Zotero.
@@ -305,6 +234,8 @@ function startup({ id }) {
   } }, ['tab'], 'anywhere-plamo');
 }
 async function shutdown() {
+  cleanupSelectionTranslation?.();
+  cleanupSelectionTranslation = null;
   Zotero.Reader.unregisterEventListener('renderToolbar', toolbar);
   Zotero.Notifier.unregisterObserver(observer);
   for (const s of sessions.values()) close(s);
