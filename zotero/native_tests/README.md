@@ -1,0 +1,9 @@
+# Official Zotero reader acceptance (Linux)
+
+From the repository root run `TMPDIR="$HOME/.hermes/cache/scratch" python3 -B zotero/native_tests/run.py` (the scratch directory must already exist). Requires `bwrap`, Zotero Flatpak **10.0.8**, and its installed Freedesktop 25.08 runtime. No display, live bridge, model, or sign-in required. Each run builds a fresh XPI from all files in `zotero/addon` using `zotero/build.py` and prints its SHA-256.
+
+The launcher starts the installed application in a new network, process, and filesystem namespace. Only the new scratch directory, app/runtime files, and system passwd/group are mounted. A mock bridge inside the namespace validates a fresh bearer token and the actual source PDF; no real profile, token, or job is accessible. The host-window test driver is appended to a disposable copy of the application's `omni.ja` (the reader frontend and plugin are not patched).
+
+The PDF fixtures use explicit English markers (`Original page …`, `Translated page …`) to distinguish actual page text from labels and images. This tests the native reader integration, **not** translation quality or the live translation worker. The preview retains the source text on page two; the final replaces it. The mock cannot publish the final until the running test has read both preview pages.
+
+The printed evidence directory contains the XPI, `result.jsonl` (UI actions, measurements, annotation identity and result), `requests.jsonl` (authenticated requests/statuses, no token), and `native.log` (Zotero/Gecko errors). Success requires exit 0, a `PASS` record, successful authentication, and release of both distinct jobs. A failure names the first incomplete check; subsequent checks did not run. Scratch contains a disposable Zotero database and dummy token; do not publish the whole directory.
